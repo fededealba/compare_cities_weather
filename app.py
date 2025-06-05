@@ -5,6 +5,7 @@ import plotly.graph_objects as go
 from geopy.geocoders import Nominatim
 import requests
 import calendar
+from geopy.exc import GeocoderUnavailable, GeocoderTimedOut
 
 # Setup
 st.set_page_config(page_title="Weather Comparison", layout="wide")
@@ -15,8 +16,21 @@ st.text('Source: https://open-meteo.com')
 with st.sidebar:
     with st.form("settings_form"):
         st.header("Settings")
-        start = st.date_input("Start date", datetime(2010, 1, 1), key="start_date")
-        end = st.date_input("End date", datetime(2024, 12, 31), key="end_date")
+        today = datetime.today().date()
+        start = st.date_input(
+            "Start date",
+            datetime(2010, 1, 1),
+            min_value=datetime(1970, 1, 1),
+            max_value=today - timedelta(days=1),
+            key="start_date"
+        )
+        end = st.date_input(
+            "End date",
+            datetime(2024, 12, 31),
+            min_value=datetime(1970, 1, 1),
+            max_value=today,
+            key="end_date"
+        )
         city1 = st.text_input("City 1", "Paris", key="city1")
         city2 = st.text_input("City 2", "Madrid", key="city2")
         add_third_city = st.checkbox("Add a third city?")
@@ -28,16 +42,17 @@ with st.sidebar:
         city_locations = []
         for label, city in [("City 1", city1), ("City 2", city2)] + ([("City 3", city3)] if city3 else []):
             if city:
-                location = geolocator.geocode(city)
-                if location:
-                    st.caption(f"{label} resolved as: {location.address}")
-                    city_locations.append({"city": city, "lat": location.latitude, "lon": location.longitude})
-                else:
-                    st.caption(f"{label} not found.")
-        # Show map with city dots if at least one city is found
-        if city_locations:
-            map_df = pd.DataFrame(city_locations)
-            st.map(map_df.rename(columns={"lat": "latitude", "lon": "longitude"}))
+                try:
+                    location = geolocator.geocode(city, timeout=3)
+                    if location:
+                        st.caption(f"{label} resolved as: {location.address}")
+                        city_locations.append({"city": city, "lat": location.latitude, "lon": location.longitude})
+                    else:
+                        st.caption(f"{label} not found.")
+                except (GeocoderUnavailable, GeocoderTimedOut):
+                    st.caption(f"{label}: Geocoding service unavailable, please try again later.")
+                except Exception as e:
+                    st.caption(f"{label}: Geocoding error: {e}")
         submitted = st.form_submit_button("Submit")
 
 # Only run the rest of the app if the form is submitted (or on first load)
@@ -185,6 +200,13 @@ if st.session_state.form_submitted:
         cities_data = [(city1, data1, 'blue'), (city2, data2, 'red')]
         if city3 and data3 is not None:
             cities_data.append((city3, data3, 'green'))
+
+        # Show map with city dots at the top of the main page
+        if city_locations:
+            map_df = pd.DataFrame(city_locations)
+            left, center, right = st.columns([1, 2, 1])
+            with center:
+                st.map(map_df.rename(columns={"lat": "latitude", "lon": "longitude"}), size = 1000,use_container_width=False, width=400, height=200)
 
         # Tabs for plots and prediction
         plots_tab, prediction_tab = st.tabs(["📊 Plots", "🔮 Prediction"])
