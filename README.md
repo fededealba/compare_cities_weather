@@ -11,7 +11,7 @@ This Streamlit app allows you to compare historical weather data — including t
 
 ## 🖥️ Live Demo
 
-To be hosted soon (Streamlit Cloud / EC2 / etc.)
+https://fededealba-compare-cities-weather-app-zglwfv.streamlit.app
 
 ## 🧰 Tech Stack
 
