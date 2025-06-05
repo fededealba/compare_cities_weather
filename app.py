@@ -23,6 +23,21 @@ with st.sidebar:
         city3 = None
         if add_third_city:
             city3 = st.text_input("City 3", "Berlin", key="city3")
+        # Show resolved addresses for each city
+        geolocator = Nominatim(user_agent="streamlit-weather-app-sidebar")
+        city_locations = []
+        for label, city in [("City 1", city1), ("City 2", city2)] + ([("City 3", city3)] if city3 else []):
+            if city:
+                location = geolocator.geocode(city)
+                if location:
+                    st.caption(f"{label} resolved as: {location.address}")
+                    city_locations.append({"city": city, "lat": location.latitude, "lon": location.longitude})
+                else:
+                    st.caption(f"{label} not found.")
+        # Show map with city dots if at least one city is found
+        if city_locations:
+            map_df = pd.DataFrame(city_locations)
+            st.map(map_df.rename(columns={"lat": "latitude", "lon": "longitude"}))
         submitted = st.form_submit_button("Submit")
 
 # Only run the rest of the app if the form is submitted (or on first load)
