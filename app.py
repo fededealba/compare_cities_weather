@@ -1,6 +1,6 @@
 import streamlit as st
 #from meteostat import Stations, Monthly
-from datetime import datetime, time
+from datetime import datetime, time, timedelta
 import pandas as pd
 import plotly.graph_objects as go
 from geopy.geocoders import Nominatim
@@ -22,6 +22,9 @@ with st.sidebar:
     city3 = None
     if add_third_city:
         city3 = st.text_input("City 3", "Berlin", key="city3")
+    st.markdown("---")
+    tomorrow = datetime.today().date() + timedelta(days=1)
+    prediction_date = st.date_input("Prediction date", tomorrow, key="prediction_date")
 
 if start >= end:
     st.error("End date must be after start date.")
@@ -165,98 +168,156 @@ if data1 is not None and data2 is not None:
     if city3 and data3 is not None:
         cities_data.append((city3, data3, 'green'))
 
-    st.subheader("🌡️ Monthly Temperature (°C)")
-    def plot_temperature():
-        fig = go.Figure()
+    # Tabs for plots and prediction
+    plots_tab, prediction_tab = st.tabs(["📊 Plots", "🔮 Prediction"])
+
+    with plots_tab:
+        st.subheader("🌡️ Monthly Temperature (°C)")
+        def plot_temperature():
+            fig = go.Figure()
+            for city, monthly_df, color in cities_data:
+                x = monthly_df["time"]
+                if "temperature_2m_mean" not in monthly_df.columns:
+                    st.info(f"Temperature data not available for {city}.")
+                    continue
+                y = monthly_df["temperature_2m_mean"]
+                y_p10 = monthly_df["temperature_2m_mean_p10"] if "temperature_2m_mean_p10" in monthly_df.columns else None
+                y_p90 = monthly_df["temperature_2m_mean_p90"] if "temperature_2m_mean_p90" in monthly_df.columns else None
+                # Fill between p10 and p90
+                if y_p10 is not None and y_p90 is not None:
+                    fig.add_trace(go.Scatter(
+                        x=x,
+                        y=y_p90,
+                        mode='lines',
+                        line=dict(width=0),
+                        showlegend=False,
+                        hoverinfo='skip',
+                        name=f"{city} 90th percentile"
+                    ))
+                    fig.add_trace(go.Scatter(
+                        x=x,
+                        y=y_p10,
+                        mode='lines',
+                        fill='tonexty',
+                        fillcolor='rgba(0,0,255,0.1)' if color=='blue' else ('rgba(255,0,0,0.1)' if color=='red' else 'rgba(0,128,0,0.1)'),
+                        line=dict(width=0),
+                        showlegend=True,
+                        name=f"{city} 10th-90th percentile"
+                    ))
+                # Mean line
+                fig.add_trace(go.Scatter(x=x, y=y, mode='lines+markers', name=f"{city} Mean", line=dict(color=color, width=2)))
+            fig.update_layout(title="Temperature (80% Range)", xaxis_title="Month", yaxis_title="°C", height=400)
+            st.plotly_chart(fig, use_container_width=True)
+        plot_temperature()
+
+        st.subheader("💧 Average Humidity (%)")
+        def plot_humidity():
+            fig = go.Figure()
+            for city, monthly_df, color in cities_data:
+                x = monthly_df["time"]
+                y = monthly_df["relative_humidity_2m_mean"] if "relative_humidity_2m_mean" in monthly_df.columns else None
+                y_p10 = monthly_df["relative_humidity_2m_mean_p10"] if "relative_humidity_2m_mean_p10" in monthly_df.columns else None
+                y_p90 = monthly_df["relative_humidity_2m_mean_p90"] if "relative_humidity_2m_mean_p90" in monthly_df.columns else None
+                if y is None:
+                    st.info(f"Humidity data not available for {city}.")
+                    continue
+                # Fill between p10 and p90
+                if y_p10 is not None and y_p90 is not None:
+                    fig.add_trace(go.Scatter(
+                        x=x,
+                        y=y_p90,
+                        mode='lines',
+                        line=dict(width=0),
+                        showlegend=False,
+                        hoverinfo='skip',
+                        name=f"{city} 90th percentile"
+                    ))
+                    fig.add_trace(go.Scatter(
+                        x=x,
+                        y=y_p10,
+                        mode='lines',
+                        fill='tonexty',
+                        fillcolor='rgba(0,0,255,0.1)' if color=='blue' else ('rgba(255,0,0,0.1)' if color=='red' else 'rgba(0,128,0,0.1)'),
+                        line=dict(width=0),
+                        showlegend=True,
+                        name=f"{city} 10th-90th percentile"
+                    ))
+                # Mean line
+                fig.add_trace(go.Scatter(x=x, y=y, mode='lines+markers', name=f"{city} Mean", line=dict(color=color, width=2)))
+            fig.update_layout(title="Humidity (80% Range)", xaxis_title="Month", yaxis_title="%", height=400)
+            st.plotly_chart(fig, use_container_width=True)
+        if any("relative_humidity_2m_mean" in df.columns for _, df, _ in cities_data):
+            plot_humidity()
+        else:
+            st.info("Humidity data not available for one or more cities.")
+
+        st.subheader("🌧️ Monthly Total Precipitation (mm)")
+        def plot_comparison(metric, title, unit, round_decimals=None, show_total=False):
+            fig = go.Figure()
+            totals = []
+            for city, monthly_df, color in cities_data:
+                x = monthly_df["time"]
+                y = monthly_df[metric]
+                fig.add_trace(go.Scatter(x=x, y=y, mode='lines+markers', name=f"{city}", line=dict(color=color, width=2)))
+                if show_total:
+                    total = y.sum()
+                    totals.append((city, total))
+            fig.update_layout(title=title, xaxis_title="Month", yaxis_title=unit, height=400)
+            st.plotly_chart(fig, use_container_width=True)
+            if show_total and totals:
+                st.markdown("**Total for average year:**")
+                for city, total in totals:
+                    st.write(f"{city}: {total:.1f} {unit}")
+
+        plot_comparison("precipitation_sum", "Precipitation", "mm", round_decimals=1, show_total=True)
+
+        st.subheader("🌞 Total Sunshine Hours")
+        if all("sunshine_hours" in df.columns for _, df, _ in cities_data):
+            plot_comparison("sunshine_hours", "Monthly Sunshine Duration", "Hours", round_decimals=1, show_total=True)
+        else:
+            st.info("Sunshine duration data not available for one or more cities.")
+
+    with prediction_tab:
+        st.header(f"Prediction for {prediction_date.strftime('%B %d')}")
+        pred_month = prediction_date.month
+        prediction_rows = []
         for city, monthly_df, color in cities_data:
-            x = monthly_df["time"]
-            if "temperature_2m_mean" not in monthly_df.columns:
-                st.info(f"Temperature data not available for {city}.")
+            pred_row = monthly_df[monthly_df['month'] == pred_month]
+            if pred_row.empty:
+                prediction_rows.append({
+                    "City": city,
+                    "Temperature Mean (°C)": "No data",
+                    "Temperature 10th-90th (°C)": "No data",
+                    "Humidity Mean (%)": "No data",
+                    "Humidity 10th-90th (%)": "No data",
+                    "Precipitation (mm, daily avg)": "No data",
+                    "Sunshine (hours, daily avg)": "No data"
+                })
                 continue
-            y = monthly_df["temperature_2m_mean"]
-            y_p10 = monthly_df["temperature_2m_mean_p10"] if "temperature_2m_mean_p10" in monthly_df.columns else None
-            y_p90 = monthly_df["temperature_2m_mean_p90"] if "temperature_2m_mean_p90" in monthly_df.columns else None
-            # Fill between p10 and p90
-            if y_p10 is not None and y_p90 is not None:
-                fig.add_trace(go.Scatter(
-                    x=x,
-                    y=y_p90,
-                    mode='lines',
-                    line=dict(width=0),
-                    showlegend=False,
-                    hoverinfo='skip',
-                    name=f"{city} 90th percentile"
-                ))
-                fig.add_trace(go.Scatter(
-                    x=x,
-                    y=y_p10,
-                    mode='lines',
-                    fill='tonexty',
-                    fillcolor='rgba(0,0,255,0.1)' if color=='blue' else ('rgba(255,0,0,0.1)' if color=='red' else 'rgba(0,128,0,0.1)'),
-                    line=dict(width=0),
-                    showlegend=True,
-                    name=f"{city} 10th-90th percentile"
-                ))
-            # Mean line
-            fig.add_trace(go.Scatter(x=x, y=y, mode='lines+markers', name=f"{city} Mean", line=dict(color=color, width=2)))
-        fig.update_layout(title="Temperature (80% Range)", xaxis_title="Month", yaxis_title="°C", height=400)
-        st.plotly_chart(fig, use_container_width=True)
-    plot_temperature()
-
-    st.subheader("�� Average Humidity (%)")
-    def plot_humidity():
-        fig = go.Figure()
-        for city, monthly_df, color in cities_data:
-            x = monthly_df["time"]
-            y = monthly_df["relative_humidity_2m_mean"] if "relative_humidity_2m_mean" in monthly_df.columns else None
-            y_p10 = monthly_df["relative_humidity_2m_mean_p10"] if "relative_humidity_2m_mean_p10" in monthly_df.columns else None
-            y_p90 = monthly_df["relative_humidity_2m_mean_p90"] if "relative_humidity_2m_mean_p90" in monthly_df.columns else None
-            if y is None:
-                st.info(f"Humidity data not available for {city}.")
-                continue
-            # Fill between p10 and p90
-            if y_p10 is not None and y_p90 is not None:
-                fig.add_trace(go.Scatter(
-                    x=x,
-                    y=y_p90,
-                    mode='lines',
-                    line=dict(width=0),
-                    showlegend=False,
-                    hoverinfo='skip',
-                    name=f"{city} 90th percentile"
-                ))
-                fig.add_trace(go.Scatter(
-                    x=x,
-                    y=y_p10,
-                    mode='lines',
-                    fill='tonexty',
-                    fillcolor='rgba(0,0,255,0.1)' if color=='blue' else ('rgba(255,0,0,0.1)' if color=='red' else 'rgba(0,128,0,0.1)'),
-                    line=dict(width=0),
-                    showlegend=True,
-                    name=f"{city} 10th-90th percentile"
-                ))
-            # Mean line
-            fig.add_trace(go.Scatter(x=x, y=y, mode='lines+markers', name=f"{city} Mean", line=dict(color=color, width=2)))
-        fig.update_layout(title="Humidity (80% Range)", xaxis_title="Month", yaxis_title="%", height=400)
-        st.plotly_chart(fig, use_container_width=True)
-    if any("relative_humidity_2m_mean" in df.columns for _, df, _ in cities_data):
-        plot_humidity()
-    else:
-        st.info("Humidity data not available for one or more cities.")
-
-    st.subheader("🌧️ Monthly Precipitation (mm)")
-    def plot_comparison(metric, title, unit, round_decimals=None):
-        fig = go.Figure()
-        for city, monthly_df, color in cities_data:
-            x = monthly_df["time"]
-            y = monthly_df[metric]
-            fig.add_trace(go.Scatter(x=x, y=y, mode='lines+markers', name=f"{city}", line=dict(color=color, width=2)))
-        fig.update_layout(title=title, xaxis_title="Month", yaxis_title=unit, height=400)
-        st.plotly_chart(fig, use_container_width=True)
-    plot_comparison("precipitation_sum", "Precipitation", "mm", round_decimals=1)
-
-    st.subheader("🌞 Sunshine Hours")
-    if all("sunshine_hours" in df.columns for _, df, _ in cities_data):
-        plot_comparison("sunshine_hours", "Monthly Sunshine Duration", "Hours", round_decimals=1)
-    else:
-        st.info("Sunshine duration data not available for one or more cities.")
+            # Temperature
+            temp = pred_row["temperature_2m_mean"].values[0] if "temperature_2m_mean" in pred_row else None
+            temp_p10 = pred_row["temperature_2m_mean_p10"].values[0] if "temperature_2m_mean_p10" in pred_row else None
+            temp_p90 = pred_row["temperature_2m_mean_p90"].values[0] if "temperature_2m_mean_p90" in pred_row else None
+            # Humidity
+            hum = pred_row["relative_humidity_2m_mean"].values[0] if "relative_humidity_2m_mean" in pred_row else None
+            hum_p10 = pred_row["relative_humidity_2m_mean_p10"].values[0] if "relative_humidity_2m_mean_p10" in pred_row else None
+            hum_p90 = pred_row["relative_humidity_2m_mean_p90"].values[0] if "relative_humidity_2m_mean_p90" in pred_row else None
+            # Precipitation (mean daily)
+            prcp = pred_row["precipitation_sum"].values[0] if "precipitation_sum" in pred_row else None
+            # Sunshine (mean daily)
+            sun = pred_row["sunshine_hours"].values[0] if "sunshine_hours" in pred_row else None
+            # Days in month
+            days_in_month = calendar.monthrange(prediction_date.year, pred_month)[1]
+            prcp_daily = prcp / days_in_month if prcp is not None else None
+            sun_daily = sun / days_in_month if sun is not None else None
+            prediction_rows.append({
+                "City": city,
+                "Temperature Mean (°C)": f"{temp:.1f}" if temp is not None else "No data",
+                "Temperature 10th-90th (°C)": f"{temp_p10:.1f}–{temp_p90:.1f}" if temp_p10 is not None and temp_p90 is not None else "No data",
+                "Humidity Mean (%)": f"{hum:.1f}" if hum is not None else "No data",
+                "Humidity 10th-90th (%)": f"{hum_p10:.1f}–{hum_p90:.1f}" if hum_p10 is not None and hum_p90 is not None else "No data",
+                "Precipitation (mm, daily avg)": f"{prcp_daily:.2f}" if prcp_daily is not None else "No data",
+                "Sunshine (hours, daily avg)": f"{sun_daily:.2f}" if sun_daily is not None else "No data"
+            })
+        prediction_df = pd.DataFrame(prediction_rows)
+        st.table(prediction_df)
