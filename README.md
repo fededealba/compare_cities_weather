@@ -38,9 +38,6 @@ To be hosted soon (Streamlit Cloud / EC2 / etc.)
    streamlit run app.py
    ```
 
-4. **Environment variables** (if applicable):
-   Create a `.env` file to define any required API keys or paths.
-
 ## 📁 File Structure
 
 ```
@@ -56,4 +53,4 @@ To be hosted soon (Streamlit Cloud / EC2 / etc.)
 
 ## 📸 Screenshots
 
-_Add screenshots here if available_
+![Weather Comparison Screenshot](screenshots/screenshot.png)
