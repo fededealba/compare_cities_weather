@@ -1,5 +1,4 @@
 import streamlit as st
-#from meteostat import Stations, Monthly
 from datetime import datetime, time, timedelta
 import pandas as pd
 import plotly.graph_objects as go
@@ -23,8 +22,6 @@ with st.sidebar:
     if add_third_city:
         city3 = st.text_input("City 3", "Berlin", key="city3")
     st.markdown("---")
-    tomorrow = datetime.today().date() + timedelta(days=1)
-    prediction_date = st.date_input("Prediction date", tomorrow, key="prediction_date")
 
 if start >= end:
     st.error("End date must be after start date.")
@@ -149,8 +146,6 @@ with st.spinner("Fetching weather data from Open-Meteo..."):
     data1, err1 = get_open_meteo_data(city1, start_dt, end_dt)
     data2, err2 = get_open_meteo_data(city2, start_dt, end_dt)
     data3, err3 = (get_open_meteo_data(city3, start_dt, end_dt) if city3 else (None, None))
-
-#st.dataframe(data1)
 
 if err1:
     st.error(err1)
@@ -278,6 +273,8 @@ if data1 is not None and data2 is not None:
             st.info("Sunshine duration data not available for one or more cities.")
 
     with prediction_tab:
+        tomorrow = datetime.today().date() + timedelta(days=1)
+        prediction_date = st.date_input("Prediction date", tomorrow, key="prediction_date")
         st.header(f"Prediction for {prediction_date.strftime('%B %d')}")
         pred_month = prediction_date.month
         prediction_rows = []

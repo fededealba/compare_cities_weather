@@ -7,7 +7,7 @@ This Streamlit app allows you to compare historical weather data — including t
 - 📍 Compare 2 or 3 cities side-by-side  
 - 📅 Select a date range for historical analysis  
 - 📊 View temperature, humidity, rainfall, and sunshine hours  
-- 🌐 Supports cities worldwide (based on NOAA GSOD dataset)  
+- 🌐 Supports cities worldwide (based on OpenStreetMap Nominatim)  
 
 ## 🖥️ Live Demo
 
@@ -18,7 +18,7 @@ To be hosted soon (Streamlit Cloud / EC2 / etc.)
 - [Streamlit](https://streamlit.io/)
 - [Pandas](https://pandas.pydata.org/)
 - [Plotly](https://plotly.com/python/)
-- [NOAA GSOD](https://data.noaa.gov/) or similar weather dataset
+- [Open-Meteo](https://open-meteo.com)
 
 ## 🛠️ Setup Instructions
 
@@ -57,7 +57,3 @@ To be hosted soon (Streamlit Cloud / EC2 / etc.)
 ## 📸 Screenshots
 
 _Add screenshots here if available_
-
-## 📄 License
-
-MIT License — feel free to use and modify!
