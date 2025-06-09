@@ -6,11 +6,33 @@ from geopy.geocoders import Nominatim
 import requests
 import calendar
 from geopy.exc import GeocoderUnavailable, GeocoderTimedOut
+import os
 
 # Setup
 st.set_page_config(page_title="Weather Comparison", layout="wide")
 st.title("🌦️ Compare Historical Weather Between Two Cities")
 st.text('Source: https://open-meteo.com')
+
+# Persistent geocoding cache
+CITY_CACHE_FILE = 'city_cache.csv'
+def get_city_latlon(city_name, geolocator):
+    # Check if cache file exists and city is cached
+    if os.path.exists(CITY_CACHE_FILE):
+        cache = pd.read_csv(CITY_CACHE_FILE)
+        match = cache[cache['city'].str.lower() == city_name.lower()]
+        if not match.empty:
+            return match.iloc[0]['lat'], match.iloc[0]['lon']
+    # If not cached, geocode
+    location = geolocator.geocode(city_name)
+    if location:
+        # Save to cache
+        new_row = pd.DataFrame([{'city': city_name, 'lat': location.latitude, 'lon': location.longitude}])
+        if os.path.exists(CITY_CACHE_FILE):
+            new_row.to_csv(CITY_CACHE_FILE, mode='a', header=False, index=False)
+        else:
+            new_row.to_csv(CITY_CACHE_FILE, index=False)
+        return location.latitude, location.longitude
+    return None, None
 
 # Date and city selection in sidebar
 with st.sidebar:
@@ -43,10 +65,10 @@ with st.sidebar:
         for label, city in [("City 1", city1), ("City 2", city2)] + ([("City 3", city3)] if city3 else []):
             if city:
                 try:
-                    location = geolocator.geocode(city, timeout=3)
-                    if location:
-                        st.caption(f"{label} resolved as: {location.address}")
-                        city_locations.append({"city": city, "lat": location.latitude, "lon": location.longitude})
+                    lat, lon = get_city_latlon(city, geolocator)
+                    if lat is not None and lon is not None:
+                        st.caption(f"{label} resolved as: {city} (lat: {lat:.4f}, lon: {lon:.4f})")
+                        city_locations.append({"city": city, "lat": lat, "lon": lon})
                     else:
                         st.caption(f"{label} not found.")
                 except (GeocoderUnavailable, GeocoderTimedOut):
@@ -77,24 +99,9 @@ if st.session_state.form_submitted:
     else:
         end_dt = datetime.combine(end, time.min)
 
-    # Geocoding function
+    # Fetch weather data from Open-Meteo using cached lat/lon
     @st.cache_data
-    def get_coordinates(city_name):
-        geolocator = Nominatim(user_agent="streamlit-weather-app")
-        location = geolocator.geocode(city_name)
-        if location:
-            return (location.latitude, location.longitude)
-        else:
-            return None
-
-    # Fetch weather data from Open-Meteo
-    @st.cache_data
-    def get_open_meteo_data(city_name, start, end):
-        coords = get_coordinates(city_name)
-        if not coords:
-            return None, f"Could not find location for {city_name}"
-        lat, lon = coords
-        # Open-Meteo API expects YYYY-MM-DD
+    def get_open_meteo_data_by_latlon(city_name, lat, lon, start, end):
         start_str = start.strftime('%Y-%m-%d')
         end_str = end.strftime('%Y-%m-%d')
         daily_url = (
@@ -105,10 +112,10 @@ if st.session_state.form_submitted:
         )
         daily_resp = requests.get(daily_url)
         if daily_resp.status_code != 200:
-            return None, f"Open-Meteo API error (daily): {daily_resp.status_code}"
+            return None, f"Open-Meteo API error (daily): {daily_resp.status_code}", None
         daily_data = daily_resp.json()
         if not daily_data.get("daily"):
-            return None, f"No data available for {city_name} in this period."
+            return None, f"No data available for {city_name} in this period.", None
         df = pd.DataFrame(daily_data["daily"])
         # Convert sunshine_duration from seconds to hours
         if "sunshine_duration" in df.columns:
@@ -197,14 +204,14 @@ if st.session_state.form_submitted:
             monthly_df["temperature_2m_min"] = monthly_df["temperature_2m_min_mean"]
         if "temperature_2m_max_mean" in monthly_df.columns:
             monthly_df["temperature_2m_max"] = monthly_df["temperature_2m_max_mean"]
-        return monthly_by_month, None
+        return monthly_by_month, None, df
 
+    # Prepare city data with lat/lon
+    city_latlons = {c['city']: (c['lat'], c['lon']) for c in city_locations}
     with st.spinner("Fetching weather data from Open-Meteo..."):
-        data1, err1 = get_open_meteo_data(city1, start_dt, end_dt)
-        data2, err2 = get_open_meteo_data(city2, start_dt, end_dt)
-        data3, err3 = (get_open_meteo_data(city3, start_dt, end_dt) if city3 else (None, None))
-
-        #st.dataframe(data1)
+        data1, err1, df1 = get_open_meteo_data_by_latlon(city1, *city_latlons[city1], start_dt, end_dt)
+        data2, err2, df2 = get_open_meteo_data_by_latlon(city2, *city_latlons[city2], start_dt, end_dt)
+        data3, err3, df3 = (get_open_meteo_data_by_latlon(city3, *city_latlons[city3], start_dt, end_dt) if city3 else (None, None, None))
 
     if err1:
         st.error(err1)
@@ -355,47 +362,19 @@ if st.session_state.form_submitted:
             plot_min_max_temperature()
 
             st.subheader("🌡️ Absolute Hottest and Coldest Days (Daily Mean Temperature)")
-            def get_abs_min_max(city_name, start, end):
-                coords = get_coordinates(city_name)
-                if not coords:
-                    return None
-                lat, lon = coords
-                start_str = start.strftime('%Y-%m-%d')
-                end_str = end.strftime('%Y-%m-%d')
-                daily_url = (
-                    f"https://archive-api.open-meteo.com/v1/archive?latitude={lat}&longitude={lon}"
-                    f"&start_date={start_str}&end_date={end_str}"
-                    f"&daily=temperature_2m_mean"
-                    f"&timezone=auto"
-                )
-                daily_resp = requests.get(daily_url)
-                if daily_resp.status_code != 200:
-                    return None
-                daily_data = daily_resp.json()
-                if not daily_data.get("daily"):
-                    return None
-                df = pd.DataFrame(daily_data["daily"])
-                df["time"] = pd.to_datetime(df["time"])
-                min_temp = df["temperature_2m_mean"].min()
-                max_temp = df["temperature_2m_mean"].max()
-                min_date = df.loc[df["temperature_2m_mean"].idxmin(), "time"]
-                max_date = df.loc[df["temperature_2m_mean"].idxmax(), "time"]
-                return {
-                    "min_temp": min_temp,
-                    "min_date": min_date,
-                    "max_temp": max_temp,
-                    "max_date": max_date
-                }
             abs_min_max = []
-            for city in [city1, city2] + ([city3] if city3 else []):
-                result = get_abs_min_max(city, start_dt, end_dt)
-                if result:
+            for city, df in zip([city1, city2] + ([city3] if city3 else []), [df1, df2] + ([df3] if city3 else [])):
+                if df is not None:
+                    min_temp = df["temperature_2m_mean"].min()
+                    max_temp = df["temperature_2m_mean"].max()
+                    min_date = df.loc[df["temperature_2m_mean"].idxmin(), "time"]
+                    max_date = df.loc[df["temperature_2m_mean"].idxmax(), "time"]
                     abs_min_max.append({
                         "City": city,
-                        "Coldest (°C)": result["min_temp"],
-                        "Coldest Date": result["min_date"].strftime('%Y-%m-%d'),
-                        "Hottest (°C)": result["max_temp"],
-                        "Hottest Date": result["max_date"].strftime('%Y-%m-%d')
+                        "Coldest (°C)": min_temp,
+                        "Coldest Date": min_date.strftime('%Y-%m-%d'),
+                        "Hottest (°C)": max_temp,
+                        "Hottest Date": max_date.strftime('%Y-%m-%d')
                     })
             abs_min_max_df = pd.DataFrame(abs_min_max)
             st.table(abs_min_max_df)
