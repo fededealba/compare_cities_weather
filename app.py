@@ -100,7 +100,7 @@ if st.session_state.form_submitted:
         daily_url = (
             f"https://archive-api.open-meteo.com/v1/archive?latitude={lat}&longitude={lon}"
             f"&start_date={start_str}&end_date={end_str}"
-            f"&daily=precipitation_sum,relative_humidity_2m_mean,sunshine_duration,temperature_2m_mean"
+            f"&daily=precipitation_sum,relative_humidity_2m_mean,sunshine_duration,temperature_2m_mean,temperature_2m_min,temperature_2m_max"
             f"&timezone=auto"
         )
         daily_resp = requests.get(daily_url)
@@ -125,6 +125,10 @@ if st.session_state.form_submitted:
             agg_dict["relative_humidity_2m_mean"] = ["mean", lambda x: x.quantile(0.1), lambda x: x.quantile(0.9)]
         if "temperature_2m_mean" in df.columns:
             agg_dict["temperature_2m_mean"] = ["mean", lambda x: x.quantile(0.1), lambda x: x.quantile(0.9)]
+        if "temperature_2m_min" in df.columns:
+            agg_dict["temperature_2m_min"] = ["mean"]
+        if "temperature_2m_max" in df.columns:
+            agg_dict["temperature_2m_max"] = ["mean"]
         monthly_df = df.groupby(df["time"].dt.to_period("M")).agg(agg_dict)
         # Flatten MultiIndex columns
         def colname(col):
@@ -176,14 +180,31 @@ if st.session_state.form_submitted:
             agg_stats["temperature_2m_mean_p10"] = 'mean'
         if "temperature_2m_mean_p90" in monthly_df.columns:
             agg_stats["temperature_2m_mean_p90"] = 'mean'
+        if "temperature_2m_min" in monthly_df.columns:
+            agg_stats["temperature_2m_min"] = 'mean'
+        if "temperature_2m_max" in monthly_df.columns:
+            agg_stats["temperature_2m_max"] = 'mean'
         monthly_by_month = monthly_df.groupby('month').agg(agg_stats).reset_index()
         monthly_by_month['time'] = monthly_by_month['month'].apply(lambda m: calendar.month_abbr[m])
+        # Compute min/max daily mean temperature for each month (across all years)
+        if "temperature_2m_mean" in df.columns:
+            df['month'] = df['time'].dt.month
+            min_by_month = df.groupby('month')['temperature_2m_mean'].min()
+            max_by_month = df.groupby('month')['temperature_2m_mean'].max()
+            monthly_by_month['temperature_2m_mean_min'] = monthly_by_month['month'].map(min_by_month)
+            monthly_by_month['temperature_2m_mean_max'] = monthly_by_month['month'].map(max_by_month)
+        if "temperature_2m_min_mean" in monthly_df.columns:
+            monthly_df["temperature_2m_min"] = monthly_df["temperature_2m_min_mean"]
+        if "temperature_2m_max_mean" in monthly_df.columns:
+            monthly_df["temperature_2m_max"] = monthly_df["temperature_2m_max_mean"]
         return monthly_by_month, None
 
     with st.spinner("Fetching weather data from Open-Meteo..."):
         data1, err1 = get_open_meteo_data(city1, start_dt, end_dt)
         data2, err2 = get_open_meteo_data(city2, start_dt, end_dt)
         data3, err3 = (get_open_meteo_data(city3, start_dt, end_dt) if city3 else (None, None))
+
+        #st.dataframe(data1)
 
     if err1:
         st.error(err1)
@@ -316,6 +337,88 @@ if st.session_state.form_submitted:
                 plot_comparison("sunshine_hours", "Monthly Sunshine Duration", "Hours", round_decimals=1, show_total=True)
             else:
                 st.info("Sunshine duration data not available for one or more cities.")
+
+            st.subheader("🌡️ Monthly Min/Max Temperature (°C)")
+            def plot_min_max_temperature():
+                fig = go.Figure()
+                for city, monthly_df, color in cities_data:
+                    x = monthly_df["time"]
+                    y_min = monthly_df["temperature_2m_mean_min"] if "temperature_2m_mean_min" in monthly_df.columns else None
+                    y_max = monthly_df["temperature_2m_mean_max"] if "temperature_2m_mean_max" in monthly_df.columns else None
+                    if y_min is None or y_max is None:
+                        st.info(f"Min/Max temperature data not available for {city}.")
+                        continue
+                    fig.add_trace(go.Scatter(x=x, y=y_min, mode='lines+markers', name=f"{city} Min", line=dict(color=color, dash='dot')))
+                    fig.add_trace(go.Scatter(x=x, y=y_max, mode='lines+markers', name=f"{city} Max", line=dict(color=color, dash='dash')))
+                fig.update_layout(title="Min/Max Temperature (from daily means)", xaxis_title="Month", yaxis_title="°C", height=400)
+                st.plotly_chart(fig, use_container_width=True)
+            plot_min_max_temperature()
+
+            st.subheader("🌡️ Absolute Hottest and Coldest Days (Daily Mean Temperature)")
+            def get_abs_min_max(city_name, start, end):
+                coords = get_coordinates(city_name)
+                if not coords:
+                    return None
+                lat, lon = coords
+                start_str = start.strftime('%Y-%m-%d')
+                end_str = end.strftime('%Y-%m-%d')
+                daily_url = (
+                    f"https://archive-api.open-meteo.com/v1/archive?latitude={lat}&longitude={lon}"
+                    f"&start_date={start_str}&end_date={end_str}"
+                    f"&daily=temperature_2m_mean"
+                    f"&timezone=auto"
+                )
+                daily_resp = requests.get(daily_url)
+                if daily_resp.status_code != 200:
+                    return None
+                daily_data = daily_resp.json()
+                if not daily_data.get("daily"):
+                    return None
+                df = pd.DataFrame(daily_data["daily"])
+                df["time"] = pd.to_datetime(df["time"])
+                min_temp = df["temperature_2m_mean"].min()
+                max_temp = df["temperature_2m_mean"].max()
+                min_date = df.loc[df["temperature_2m_mean"].idxmin(), "time"]
+                max_date = df.loc[df["temperature_2m_mean"].idxmax(), "time"]
+                return {
+                    "min_temp": min_temp,
+                    "min_date": min_date,
+                    "max_temp": max_temp,
+                    "max_date": max_date
+                }
+            abs_min_max = []
+            for city in [city1, city2] + ([city3] if city3 else []):
+                result = get_abs_min_max(city, start_dt, end_dt)
+                if result:
+                    abs_min_max.append({
+                        "City": city,
+                        "Coldest (°C)": result["min_temp"],
+                        "Coldest Date": result["min_date"].strftime('%Y-%m-%d'),
+                        "Hottest (°C)": result["max_temp"],
+                        "Hottest Date": result["max_date"].strftime('%Y-%m-%d')
+                    })
+            abs_min_max_df = pd.DataFrame(abs_min_max)
+            st.table(abs_min_max_df)
+            def plot_abs_min_max():
+                fig = go.Figure()
+                for i, row in abs_min_max_df.iterrows():
+                    fig.add_trace(go.Bar(
+                        x=[row["City"]],
+                        y=[row["Hottest (°C)"]],
+                        name=f"{row['City']} Hottest",
+                        marker_color='red',
+                        text=[f"{row['Hottest Date']}"]
+                    ))
+                    fig.add_trace(go.Bar(
+                        x=[row["City"]],
+                        y=[row["Coldest (°C)"]],
+                        name=f"{row['City']} Coldest",
+                        marker_color='blue',
+                        text=[f"{row['Coldest Date']}"]
+                    ))
+                fig.update_layout(barmode='group', title="Absolute Hottest and Coldest Daily Mean Temperatures", xaxis_title="City", yaxis_title="°C", height=400)
+                st.plotly_chart(fig, use_container_width=True)
+            plot_abs_min_max()
 
         with prediction_tab:
             tomorrow = datetime.today().date() + timedelta(days=1)
