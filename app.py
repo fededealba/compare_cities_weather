@@ -29,13 +29,8 @@ st.text('Source: https://open-meteo.com')
 
 
 def create_retry_session():
-    """HTTP session with automatic retries and backoff for rate-limited APIs."""
     session = requests.Session()
-    retry = Retry(
-        total=5,
-        backoff_factor=2,
-        status_forcelist=[429, 500, 502, 503, 504],
-    )
+    retry = Retry(total=5, backoff_factor=2, status_forcelist=[429, 500, 502, 503, 504])
     adapter = HTTPAdapter(max_retries=retry)
     session.mount("https://", adapter)
     session.mount("http://", adapter)
@@ -43,7 +38,6 @@ def create_retry_session():
     return session
 
 
-# Geocoding functions
 def get_city_latlon(city_name, geolocator):
     if os.path.exists(CITY_CACHE_FILE):
         cache = pd.read_csv(CITY_CACHE_FILE)
@@ -61,52 +55,79 @@ def get_city_latlon(city_name, geolocator):
     return None, None
 
 
-# Weather data processing functions
 def build_api_url(lat, lon, start_str, end_str):
     return (
         f"{API_BASE_URL}?latitude={lat}&longitude={lon}"
         f"&start_date={start_str}&end_date={end_str}"
-        f"&daily=precipitation_sum,relative_humidity_2m_mean,sunshine_duration,temperature_2m_mean,temperature_2m_min,temperature_2m_max"
+        f"&hourly=temperature_2m,relative_humidity_2m,precipitation,sunshine_duration"
+        f"&daily=sunrise,sunset"
         f"&timezone=auto"
     )
 
 
-def process_daily_data(daily_data):
-    df = pd.DataFrame(daily_data["daily"])
+def process_hourly_data(api_data):
+    df = pd.DataFrame(api_data["hourly"])
+    df["time"] = pd.to_datetime(df["time"])
+    df["date"] = df["time"].dt.date
+
+    df_daily = pd.DataFrame({
+        "date": pd.to_datetime(api_data["daily"]["time"]).dt.date,
+        "sunrise": pd.to_datetime(api_data["daily"]["sunrise"]),
+        "sunset": pd.to_datetime(api_data["daily"]["sunset"]),
+    })
+    df = df.merge(df_daily[["date", "sunrise", "sunset"]], on="date", how="left")
+    df["is_daytime"] = (df["time"] >= df["sunrise"]) & (df["time"] < df["sunset"])
+
     if "sunshine_duration" in df.columns:
         df["sunshine_hours"] = df["sunshine_duration"] / 3600
-    df["time"] = pd.to_datetime(df["time"])
+
     return df
 
 
+def _day_night_stats(month_data, col, prefix):
+    """Per-month day and night stats from hourly values, based on daily means."""
+    stats = {}
+    for is_day, label in [(True, 'day'), (False, 'night')]:
+        subset = month_data[month_data['is_daytime'] == is_day]
+        if subset.empty or col not in subset.columns or subset[col].isna().all():
+            continue
+        daily_means = subset.groupby('date')[col].mean()
+        key = f'{prefix}_{label}'
+        stats[key] = float(daily_means.mean())
+        if len(daily_means) > 1:
+            stats[f'{key}_p10'] = float(daily_means.quantile(PERCENTILES['low']))
+            stats[f'{key}_p90'] = float(daily_means.quantile(PERCENTILES['high']))
+        else:
+            val = float(daily_means.iloc[0])
+            stats[f'{key}_p10'] = val
+            stats[f'{key}_p90'] = val
+    return stats
+
+
+def _monthly_sum_stats(month_data, col, key):
+    """Per-month stats for variables that are summed (precipitation, sunshine)."""
+    stats = {}
+    if col not in month_data.columns or month_data[col].isna().all():
+        return stats
+    monthly_totals = month_data.groupby('year_month')[col].sum()
+    if monthly_totals.empty:
+        return stats
+    stats[key] = float(monthly_totals.mean())
+    if len(monthly_totals) > 1:
+        stats[f'{key}_p10'] = float(monthly_totals.quantile(PERCENTILES['low']))
+        stats[f'{key}_p90'] = float(monthly_totals.quantile(PERCENTILES['high']))
+    else:
+        val = float(monthly_totals.iloc[0])
+        stats[f'{key}_p10'] = val
+        stats[f'{key}_p90'] = val
+    return stats
+
+
 def aggregate_to_calendar_months(df):
+    df = df.copy()
     df['calendar_month'] = df['time'].dt.month
+    df['year_month'] = df['time'].dt.to_period('M')
     results = []
-
-    def get_monthly_total_stats(month_data, metric):
-        stats = {}
-        if metric in df.columns and not month_data[metric].isna().all():
-            month_data_copy = month_data.copy()
-            month_data_copy['year_month'] = month_data_copy['time'].dt.to_period('M')
-            monthly_totals = month_data_copy.groupby('year_month')[metric].sum()
-            if not monthly_totals.empty:
-                stats[metric] = float(monthly_totals.mean())
-                if len(monthly_totals) > 1:
-                    stats[f'{metric}_p10'] = float(monthly_totals.quantile(PERCENTILES['low']))
-                    stats[f'{metric}_p90'] = float(monthly_totals.quantile(PERCENTILES['high']))
-                else:
-                    val = float(monthly_totals.iloc[0])
-                    stats[f'{metric}_p10'] = val
-                    stats[f'{metric}_p90'] = val
-        return stats
-
-    def get_daily_value_stats(month_data, metric):
-        stats = {}
-        if metric in df.columns and not month_data[metric].isna().all():
-            stats[metric] = float(month_data[metric].mean())
-            stats[f'{metric}_p10'] = float(month_data[metric].quantile(PERCENTILES['low']))
-            stats[f'{metric}_p90'] = float(month_data[metric].quantile(PERCENTILES['high']))
-        return stats
 
     for month in range(1, 13):
         month_data = df[df['calendar_month'] == month]
@@ -115,63 +136,32 @@ def aggregate_to_calendar_months(df):
 
         month_stats = {'calendar_month': month, 'month': month, 'time': calendar.month_abbr[month]}
 
-        month_stats.update(get_monthly_total_stats(month_data, 'precipitation_sum'))
-        month_stats.update(get_monthly_total_stats(month_data, 'sunshine_hours'))
-        month_stats.update(get_daily_value_stats(month_data, 'temperature_2m_mean'))
-        month_stats.update(get_daily_value_stats(month_data, 'relative_humidity_2m_mean'))
+        month_stats.update(_day_night_stats(month_data, 'temperature_2m', 'temperature'))
+        month_stats.update(_day_night_stats(month_data, 'relative_humidity_2m', 'humidity'))
+        month_stats.update(_monthly_sum_stats(month_data, 'precipitation', 'precipitation_sum'))
+        month_stats.update(_monthly_sum_stats(month_data, 'sunshine_hours', 'sunshine_hours'))
 
-        if "temperature_2m_min" in df.columns and not month_data['temperature_2m_min'].isna().all():
-            month_stats['temperature_2m_min_absolute'] = float(month_data['temperature_2m_min'].min())
-        if "temperature_2m_max" in df.columns and not month_data['temperature_2m_max'].isna().all():
-            month_stats['temperature_2m_max_absolute'] = float(month_data['temperature_2m_max'].max())
+        if 'temperature_2m' in df.columns and not month_data['temperature_2m'].isna().all():
+            month_stats['temperature_min_absolute'] = float(month_data['temperature_2m'].min())
+            month_stats['temperature_max_absolute'] = float(month_data['temperature_2m'].max())
 
         results.append(month_stats)
 
     return pd.DataFrame(results)
 
 
-def add_compatibility_columns(calendar_stats):
-    if "temperature_2m_min_absolute" in calendar_stats.columns:
-        calendar_stats["temperature_2m_mean_min"] = calendar_stats["temperature_2m_min_absolute"]
-    if "temperature_2m_max_absolute" in calendar_stats.columns:
-        calendar_stats["temperature_2m_mean_max"] = calendar_stats["temperature_2m_max_absolute"]
-    return calendar_stats
-
-
-def create_absolute_temperature_summary(df):
-    if "temperature_2m_mean" not in df.columns:
-        return {}
-
-    df['calendar_month'] = df['time'].dt.month
-    extremes = {}
-
-    for month in range(1, 13):
-        month_data = df[df['calendar_month'] == month]
-        if not month_data.empty:
-            extremes[month] = {
-                'coldest_temp': month_data['temperature_2m_mean'].min(),
-                'coldest_date': month_data.loc[month_data['temperature_2m_mean'].idxmin(), 'time'],
-                'hottest_temp': month_data['temperature_2m_mean'].max(),
-                'hottest_date': month_data.loc[month_data['temperature_2m_mean'].idxmax(), 'time']
-            }
-
-    return extremes
-
-
 @st.cache_data(ttl=86400, show_spinner=False)
 def _fetch_weather_data(city_name, lat, lon, start_str, end_str):
-    """Fetch and process weather data from Open-Meteo, cached for 24 hours per city+date range."""
     daily_url = build_api_url(lat, lon, start_str, end_str)
     session = create_retry_session()
     try:
         resp = session.get(daily_url, timeout=30)
         resp.raise_for_status()
-        daily_data = resp.json()
-        if not daily_data.get("daily"):
+        api_data = resp.json()
+        if not api_data.get("hourly"):
             return None, f"No data available for {city_name} in this period.", None
-        df = process_daily_data(daily_data)
+        df = process_hourly_data(api_data)
         calendar_stats = aggregate_to_calendar_months(df)
-        calendar_stats = add_compatibility_columns(calendar_stats)
         return calendar_stats, None, df
     except requests.exceptions.HTTPError as e:
         return None, f"Open-Meteo API error for {city_name}: {e.response.status_code}", None
@@ -185,7 +175,6 @@ def get_open_meteo_data_by_latlon(city_name, lat, lon, start, end):
     return _fetch_weather_data(city_name, lat, lon, start_str, end_str)
 
 
-# Plotting helper functions
 def plot_metric_with_percentiles(cities_data, metric, p10_col, p90_col, title, unit):
     fig = go.Figure()
     for city, monthly_df, color in cities_data:
@@ -212,30 +201,6 @@ def plot_metric_with_percentiles(cities_data, metric, p10_col, p90_col, title, u
     fig.update_layout(title=f"{title} (10th-90th Percentile Range)", xaxis_title="Month",
                       yaxis_title=unit, height=400)
     st.plotly_chart(fig, use_container_width=True)
-
-
-def plot_simple_comparison(cities_data, metric, title, unit, show_total=False):
-    fig = go.Figure()
-    totals = []
-    for city, monthly_df, color in cities_data:
-        if metric not in monthly_df.columns:
-            st.info(f"{title} data not available for {city}.")
-            continue
-        x = monthly_df["time"]
-        y = monthly_df[metric]
-        fig.add_trace(go.Scatter(x=x, y=y, mode='lines+markers',
-                                 name=f"{city}", line=dict(color=color, width=2)))
-        if show_total:
-            total = y.sum()
-            if hasattr(total, 'iloc'):
-                total = total.iloc[0] if len(total) > 0 else 0
-            totals.append((city, total))
-    fig.update_layout(title=title, xaxis_title="Month", yaxis_title=unit, height=400)
-    st.plotly_chart(fig, use_container_width=True)
-    if show_total and totals:
-        st.markdown("**Typical annual total:**")
-        for city, total in totals:
-            st.write(f"{city}: {total:.1f} {unit}")
 
 
 # Date and city selection in sidebar
@@ -280,7 +245,6 @@ with st.sidebar:
                     st.caption(f"{label}: Geocoding error: {e}")
         submitted = st.form_submit_button("Submit")
 
-# Only run the rest of the app if the form is submitted (or on first load)
 if "form_submitted" not in st.session_state:
     st.session_state.form_submitted = False
 if submitted:
@@ -291,15 +255,8 @@ if st.session_state.form_submitted:
         st.error("End date must be after start date.")
         st.stop()
 
-    if isinstance(start, datetime):
-        start_dt = start
-    else:
-        start_dt = datetime.combine(start, time.min)
-
-    if isinstance(end, datetime):
-        end_dt = end
-    else:
-        end_dt = datetime.combine(end, time.min)
+    start_dt = datetime.combine(start, time.min) if not isinstance(start, datetime) else start
+    end_dt = datetime.combine(end, time.min) if not isinstance(end, datetime) else end
 
     city_latlons = {c['city']: (c['lat'], c['lon']) for c in city_locations}
     with st.spinner("Fetching weather data from Open-Meteo..."):
@@ -313,7 +270,6 @@ if st.session_state.form_submitted:
         st.error(err2)
     if city3 and err3:
         st.error(err3)
-
     if err1 or err2 or (city3 and err3):
         st.stop()
 
@@ -326,73 +282,84 @@ if st.session_state.form_submitted:
             map_df = pd.DataFrame(city_locations)
             left, center, right = st.columns([1, 2, 1])
             with center:
-                st.map(map_df.rename(columns={"lat": "latitude", "lon": "longitude"}), size=1000, use_container_width=False, width=400, height=200)
+                st.map(map_df.rename(columns={"lat": "latitude", "lon": "longitude"}),
+                       size=1000, use_container_width=False, width=400, height=200)
 
         plots_tab, averages_tab = st.tabs(["📊 Plots", "🗓️ Monthly Averages"])
 
         with plots_tab:
-            st.subheader("🌡️ Monthly Temperature (°C)")
-            st.caption("This chart shows the mean temperature for each month, with the shaded area representing the 10th to 90th percentile range.")
-            plot_metric_with_percentiles(cities_data, "temperature_2m_mean",
-                                         "temperature_2m_mean_p10", "temperature_2m_mean_p90",
-                                         "Temperature", "°C")
+            st.subheader("☀️ Daytime Temperature (°C)")
+            st.caption("Mean temperature during daylight hours (sunrise to sunset), with 10th–90th percentile range. Each data point is the mean of daily daytime averages across all years for that month.")
+            plot_metric_with_percentiles(cities_data, "temperature_day",
+                                         "temperature_day_p10", "temperature_day_p90",
+                                         "Daytime Temperature", "°C")
 
-            st.subheader("💧 Average Humidity (%)")
-            st.caption("This chart shows the mean relative humidity for each month, with the shaded area representing the 10th to 90th percentile range.")
-            if any("relative_humidity_2m_mean" in df.columns for _, df, _ in cities_data):
-                plot_metric_with_percentiles(cities_data, "relative_humidity_2m_mean",
-                                             "relative_humidity_2m_mean_p10", "relative_humidity_2m_mean_p90",
-                                             "Humidity", "%")
-            else:
-                st.info("Humidity data not available for one or more cities.")
+            st.subheader("🌙 Nighttime Temperature (°C)")
+            st.caption("Mean temperature during nighttime hours (sunset to sunrise), with 10th–90th percentile range.")
+            plot_metric_with_percentiles(cities_data, "temperature_night",
+                                         "temperature_night_p10", "temperature_night_p90",
+                                         "Nighttime Temperature", "°C")
+
+            st.subheader("☀️ Daytime Humidity (%)")
+            st.caption("Mean relative humidity during daylight hours, with 10th–90th percentile range.")
+            plot_metric_with_percentiles(cities_data, "humidity_day",
+                                         "humidity_day_p10", "humidity_day_p90",
+                                         "Daytime Humidity", "%")
+
+            st.subheader("🌙 Nighttime Humidity (%)")
+            st.caption("Mean relative humidity during nighttime hours, with 10th–90th percentile range.")
+            plot_metric_with_percentiles(cities_data, "humidity_night",
+                                         "humidity_night_p10", "humidity_night_p90",
+                                         "Nighttime Humidity", "%")
 
             st.subheader("🌧️ Monthly Precipitation (mm)")
-            st.caption("This chart shows the mean total precipitation for each month, with the shaded area representing the 10th to 90th percentile range of the monthly totals.")
+            st.caption("Mean total precipitation for each month, with 10th–90th percentile range of monthly totals.")
             plot_metric_with_percentiles(cities_data, "precipitation_sum",
                                          "precipitation_sum_p10", "precipitation_sum_p90",
                                          "Precipitation", "mm")
 
             st.subheader("🌞 Monthly Sunshine Hours")
-            st.caption("This chart shows the mean total sunshine hours for each month, with the shaded area representing the 10th to 90th percentile range of the monthly totals.")
-            if all("sunshine_hours" in df.columns for _, df, _ in cities_data):
-                plot_metric_with_percentiles(cities_data, "sunshine_hours",
-                                             "sunshine_hours_p10", "sunshine_hours_p90",
-                                             "Sunshine", "Hours")
-            else:
-                st.info("Sunshine duration data not available for one or more cities.")
+            st.caption("Mean total sunshine hours for each month, with 10th–90th percentile range of monthly totals.")
+            plot_metric_with_percentiles(cities_data, "sunshine_hours",
+                                         "sunshine_hours_p10", "sunshine_hours_p90",
+                                         "Sunshine", "Hours")
 
-            st.subheader("🌡️ Temperature Extremes (°C)")
-            st.caption("This chart shows the absolute highest and lowest temperatures recorded for each calendar month in the selected period.")
+            st.subheader("🌡️ Temperature Extremes by Month (°C)")
+            st.caption("Absolute highest and lowest hourly temperatures recorded for each calendar month in the selected period.")
             def plot_min_max_temperature():
                 fig = go.Figure()
                 for city, monthly_df, color in cities_data:
                     x = monthly_df["time"]
-                    y_min = monthly_df["temperature_2m_mean_min"] if "temperature_2m_mean_min" in monthly_df.columns else None
-                    y_max = monthly_df["temperature_2m_mean_max"] if "temperature_2m_mean_max" in monthly_df.columns else None
+                    y_min = monthly_df.get("temperature_min_absolute")
+                    y_max = monthly_df.get("temperature_max_absolute")
                     if y_min is None or y_max is None:
                         st.info(f"Temperature extremes data not available for {city}.")
                         continue
-                    fig.add_trace(go.Scatter(x=x, y=y_min, mode='lines+markers', name=f"{city} Coldest", line=dict(color=color, dash='dot')))
-                    fig.add_trace(go.Scatter(x=x, y=y_max, mode='lines+markers', name=f"{city} Hottest", line=dict(color=color, dash='dash')))
-                fig.update_layout(title="Absolute Temperature Extremes by Month", xaxis_title="Month", yaxis_title="°C", height=400)
+                    fig.add_trace(go.Scatter(x=x, y=y_min, mode='lines+markers',
+                                             name=f"{city} Coldest", line=dict(color=color, dash='dot')))
+                    fig.add_trace(go.Scatter(x=x, y=y_max, mode='lines+markers',
+                                             name=f"{city} Hottest", line=dict(color=color, dash='dash')))
+                fig.update_layout(title="Absolute Temperature Extremes by Month",
+                                  xaxis_title="Month", yaxis_title="°C", height=400)
                 st.plotly_chart(fig, use_container_width=True)
             plot_min_max_temperature()
 
-            st.subheader("🌡️ Record Temperature Extremes")
-            st.caption("This table and chart show the single hottest and coldest days (based on daily average temperature) recorded across the entire selected date range.")
+            st.subheader("🌡️ All-Time Temperature Records")
+            st.caption("Single hottest and coldest hourly readings recorded across the entire selected date range.")
             abs_min_max = []
-            for city, df in zip([city1, city2] + ([city3] if city3 else []), [df1, df2] + ([df3] if city3 else [])):
+            for city, df in zip([city1, city2] + ([city3] if city3 else []),
+                                 [df1, df2] + ([df3] if city3 else [])):
                 if df is not None:
-                    min_temp = df["temperature_2m_mean"].min()
-                    max_temp = df["temperature_2m_mean"].max()
-                    min_date = df.loc[df["temperature_2m_mean"].idxmin(), "time"]
-                    max_date = df.loc[df["temperature_2m_mean"].idxmax(), "time"]
+                    min_temp = df["temperature_2m"].min()
+                    max_temp = df["temperature_2m"].max()
+                    min_date = df.loc[df["temperature_2m"].idxmin(), "time"]
+                    max_date = df.loc[df["temperature_2m"].idxmax(), "time"]
                     abs_min_max.append({
                         "City": city,
                         "Record Low (°C)": min_temp,
-                        "Date": min_date.strftime('%Y-%m-%d'),
+                        "Date": min_date.strftime('%Y-%m-%d %H:%M'),
                         "Record High (°C)": max_temp,
-                        "Date ": max_date.strftime('%Y-%m-%d')
+                        "Date ": max_date.strftime('%Y-%m-%d %H:%M'),
                     })
             abs_min_max_df = pd.DataFrame(abs_min_max)
             with st.expander("View Record Data Table"):
@@ -401,20 +368,17 @@ if st.session_state.form_submitted:
                 fig = go.Figure()
                 for i, row in abs_min_max_df.iterrows():
                     fig.add_trace(go.Bar(
-                        x=[row["City"]],
-                        y=[row["Record High (°C)"]],
-                        name=f"{row['City']} Record High",
-                        marker_color='red',
-                        text=[f"{row['Date ']}"]
+                        x=[row["City"]], y=[row["Record High (°C)"]],
+                        name=f"{row['City']} Record High", marker_color='red',
+                        text=[row["Date "]]
                     ))
                     fig.add_trace(go.Bar(
-                        x=[row["City"]],
-                        y=[row["Record Low (°C)"]],
-                        name=f"{row['City']} Record Low",
-                        marker_color='blue',
-                        text=[f"{row['Date']}"]
+                        x=[row["City"]], y=[row["Record Low (°C)"]],
+                        name=f"{row['City']} Record Low", marker_color='blue',
+                        text=[row["Date"]]
                     ))
-                fig.update_layout(barmode='group', title="All-Time Temperature Records", xaxis_title="City", yaxis_title="°C", height=400)
+                fig.update_layout(barmode='group', title="All-Time Temperature Records",
+                                  xaxis_title="City", yaxis_title="°C", height=400)
                 st.plotly_chart(fig, use_container_width=True)
             plot_abs_min_max()
 
@@ -430,14 +394,20 @@ if st.session_state.form_submitted:
                 val = row[col_name].iloc[0]
                 return val.item() if hasattr(val, 'item') else val
 
-            prediction_rows = []
             metrics_to_predict = [
-                {"label": "Temperature Mean", "unit": "°C", "p_label": "Temperature 10th-90th", "mean": "temperature_2m_mean", "p10": "temperature_2m_mean_p10", "p90": "temperature_2m_mean_p90", "format": ".1f"},
-                {"label": "Humidity Mean", "unit": "%", "p_label": "Humidity 10th-90th", "mean": "relative_humidity_2m_mean", "p10": "relative_humidity_2m_mean_p10", "p90": "relative_humidity_2m_mean_p90", "format": ".1f"},
+                {"label": "Daytime Temp Mean", "unit": "°C", "p_label": "Daytime Temp 10th-90th",
+                 "mean": "temperature_day", "p10": "temperature_day_p10", "p90": "temperature_day_p90", "format": ".1f"},
+                {"label": "Nighttime Temp Mean", "unit": "°C", "p_label": "Nighttime Temp 10th-90th",
+                 "mean": "temperature_night", "p10": "temperature_night_p10", "p90": "temperature_night_p90", "format": ".1f"},
+                {"label": "Daytime Humidity Mean", "unit": "%", "p_label": "Daytime Humidity 10th-90th",
+                 "mean": "humidity_day", "p10": "humidity_day_p10", "p90": "humidity_day_p90", "format": ".1f"},
+                {"label": "Nighttime Humidity Mean", "unit": "%", "p_label": "Nighttime Humidity 10th-90th",
+                 "mean": "humidity_night", "p10": "humidity_night_p10", "p90": "humidity_night_p90", "format": ".1f"},
                 {"label": "Precipitation (mm, avg monthly)", "unit": "", "mean": "precipitation_sum", "format": ".1f"},
                 {"label": "Sunshine (hours, avg monthly)", "unit": "", "mean": "sunshine_hours", "format": ".1f"},
             ]
 
+            prediction_rows = []
             for city, monthly_df, color in cities_data:
                 pred_row_data = monthly_df[monthly_df['month'] == pred_month]
                 row = {"City": city}
@@ -453,7 +423,6 @@ if st.session_state.form_submitted:
                         mean_val = get_scalar(pred_row_data, metric['mean'])
                         key = f'{metric["label"]} ({metric["unit"]})' if metric["unit"] else metric["label"]
                         row[key] = f"{mean_val:{metric['format']}}" if mean_val is not None else "No data"
-
                         if 'p10' in metric:
                             p10_val = get_scalar(pred_row_data, metric['p10'])
                             p90_val = get_scalar(pred_row_data, metric['p90'])
