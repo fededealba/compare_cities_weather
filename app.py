@@ -71,7 +71,7 @@ def process_hourly_data(api_data):
     df["date"] = df["time"].dt.date
 
     df_daily = pd.DataFrame({
-        "date": pd.to_datetime(api_data["daily"]["time"]).dt.date,
+        "date": pd.to_datetime(api_data["daily"]["time"]).date,
         "sunrise": pd.to_datetime(api_data["daily"]["sunrise"]),
         "sunset": pd.to_datetime(api_data["daily"]["sunset"]),
     })
