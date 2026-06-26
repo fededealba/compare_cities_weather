@@ -217,7 +217,7 @@ with st.sidebar:
         )
         end = st.date_input(
             "End date",
-            datetime(2024, 12, 31),
+            today,
             min_value=datetime(1970, 1, 1),
             max_value=today,
             key="end_date"
