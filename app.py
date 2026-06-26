@@ -141,18 +141,6 @@ def aggregate_to_calendar_months(df):
         month_stats.update(_monthly_sum_stats(month_data, 'precipitation', 'precipitation_sum'))
         month_stats.update(_monthly_sum_stats(month_data, 'sunshine_hours', 'sunshine_hours'))
 
-        # Daily daytime max temperature (peak temp each day during daylight)
-        day_data = month_data[month_data['is_daytime']]
-        if not day_data.empty and not day_data['temperature_2m'].isna().all():
-            daily_max = day_data.groupby('date')['temperature_2m'].max()
-            month_stats['temperature_day_max'] = float(daily_max.mean())
-            if len(daily_max) > 1:
-                month_stats['temperature_day_max_p10'] = float(daily_max.quantile(PERCENTILES['low']))
-                month_stats['temperature_day_max_p90'] = float(daily_max.quantile(PERCENTILES['high']))
-            else:
-                month_stats['temperature_day_max_p10'] = month_stats['temperature_day_max']
-                month_stats['temperature_day_max_p90'] = month_stats['temperature_day_max']
-
         if 'temperature_2m' in df.columns and not month_data['temperature_2m'].isna().all():
             month_stats['temperature_min_absolute'] = float(month_data['temperature_2m'].min())
             month_stats['temperature_max_absolute'] = float(month_data['temperature_2m'].max())
@@ -311,12 +299,6 @@ if st.session_state.form_submitted:
             plot_metric_with_percentiles(cities_data, "temperature_night",
                                          "temperature_night_p10", "temperature_night_p90",
                                          "Nighttime Temperature", "°C")
-
-            st.subheader("🌡️ Max Daytime Temperature (°C)")
-            st.caption("Mean of the daily peak temperature during daylight hours for each month, with 10th–90th percentile range.")
-            plot_metric_with_percentiles(cities_data, "temperature_day_max",
-                                         "temperature_day_max_p10", "temperature_day_max_p90",
-                                         "Max Daytime Temperature", "°C")
 
             st.subheader("☀️ Daytime Humidity (%)")
             st.caption("Mean relative humidity during daylight hours, with 10th–90th percentile range.")
