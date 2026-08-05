@@ -9,6 +9,7 @@ This Streamlit app allows you to compare historical weather data — including t
 - 📊 View temperature, humidity, rainfall, and sunshine hours  
 - ☀️ Compare daytime-only temperatures, using just the hours between local sunrise and sunset  
 - 🌡️ See how the current year is running day by day against the historical average, shaded red where it is warmer and blue where cooler  
+- 🌧️ Track this year's accumulated rainfall against a typical year's, as a running surplus or shortfall  
 - 🌐 Supports cities worldwide (based on OpenStreetMap Nominatim)  
 
 ## 🖥️ Live Demo
@@ -66,7 +67,8 @@ returns — those run to megabytes per city and are one request away:
 | `*_records.csv` | 1 row: the hottest and coldest day of the range, with dates |
 | `*_daytime.csv` | 12 rows: per-calendar-month daylight-only temperature stats |
 | `*_daytime_climatology.csv` | 366 rows: average daytime temperature per day of the year |
-| `*_daytime_daily.csv` | one row per date — only kept for `recent/` ranges, where it is what the chart plots |
+| `*_precip_climatology.csv` | 366 rows: average accumulated rainfall by each day of the year |
+| `*_daytime_daily.csv`, `*_precip_daily.csv` | one row per date — only kept for `recent/` ranges, where they are what the charts plot |
 
 Ranges whose end date is within a week of today go to `weather_cache/recent/`. They
 would otherwise be rewritten under a new filename every day, so they are gitignored,

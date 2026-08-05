@@ -324,6 +324,54 @@ if st.session_state.form_submitted:
         climatology.columns = ['month', 'day', 'avg_daytime_temperature', 'years_sampled']
         return climatology
 
+    def build_precipitation_climatology(df):
+        """Average accumulated precipitation for each day of the year.
+
+        Built from the mean rainfall on each calendar day, accumulated in calendar
+        order, so the curve can never step backwards. Accumulating each year first
+        and averaging the totals looks equivalent but is not: Feb 29 would then be
+        averaged over leap years only, leaving a visible dip on Mar 1 where the
+        sample changes. Instead Feb 29 is weighted by how often it actually occurs,
+        which also keeps the year-end value equal to the mean annual total.
+
+        Years whose data does not start on Jan 1 are skipped: a partial year's
+        running total is not a year-to-date figure.
+        """
+        empty = pd.DataFrame(columns=['month', 'day', 'avg_accumulated_precipitation', 'years_sampled'])
+        if "precipitation_sum" not in df.columns:
+            return empty
+        data = df[['time', 'precipitation_sum']].dropna().sort_values('time')
+        if data.empty:
+            return empty
+
+        years = data['time'].dt.year
+        full_years = [year for year, group in data.groupby(years)
+                      if group['time'].min().month == 1 and group['time'].min().day == 1]
+        data = data[years.isin(full_years)]
+        if data.empty:
+            return empty
+
+        months = data['time'].dt.month.rename('month')
+        days = data['time'].dt.day.rename('day')
+        daily = data.groupby([months, days])['precipitation_sum'].agg(['mean', 'size']).reset_index()
+        daily.columns = ['month', 'day', 'mean_daily', 'years_sampled']
+        daily = daily.sort_values(['month', 'day']).reset_index(drop=True)
+
+        leap_share = sum(calendar.isleap(year) for year in full_years) / len(full_years)
+        weight = pd.Series(1.0, index=daily.index)
+        weight[(daily['month'] == 2) & (daily['day'] == 29)] = leap_share
+
+        daily['avg_accumulated_precipitation'] = (daily['mean_daily'] * weight).cumsum()
+        return daily[['month', 'day', 'avg_accumulated_precipitation', 'years_sampled']]
+
+    def build_accumulated_precipitation(df):
+        """Running precipitation total for a single year, one row per date."""
+        if "precipitation_sum" not in df.columns:
+            return pd.DataFrame(columns=['date', 'precipitation_sum', 'accumulated_precipitation'])
+        data = df[['time', 'precipitation_sum']].dropna().sort_values('time').copy()
+        data['accumulated_precipitation'] = data['precipitation_sum'].cumsum()
+        return data.rename(columns={'time': 'date'}).reset_index(drop=True)
+
     def compute_temperature_records(df):
         """The single hottest and coldest days of the range, by daily mean temperature.
 
@@ -403,17 +451,25 @@ if st.session_state.form_submitted:
         Fetches weather data for a given city, using a file-based cache to avoid
         repeated API calls.
 
-        The daily series is reduced to monthly stats and record extremes before
-        caching. Returns (monthly_stats_df, records_df, error_message).
+        The daily series is reduced to summaries before caching. Returns
+        (summaries_dict, error_message), where the dict is keyed by cache kind;
+        'precip_daily' is only present for volatile ranges, where the running
+        total for a single year is what the chart plots.
         """
-        monthly_cache_path = get_cache_path(city_name, lat, lon, start, end, 'monthly')
-        records_cache_path = get_cache_path(city_name, lat, lon, start, end, 'records')
+        kinds = ['monthly', 'records', 'precip_climatology']
+        keeps_daily = is_volatile_range(end)
+        if keeps_daily:
+            kinds.append('precip_daily')
+        paths = {kind: get_cache_path(city_name, lat, lon, start, end, kind) for kind in kinds}
 
         # Check if cached data exists
-        if os.path.exists(monthly_cache_path) and os.path.exists(records_cache_path):
+        if all(os.path.exists(path) for path in paths.values()):
             try:
                 st.caption(f"Reading from cache for {city_name}...")
-                return pd.read_csv(monthly_cache_path), pd.read_csv(records_cache_path), None
+                summaries = {kind: pd.read_csv(path) for kind, path in paths.items()}
+                if keeps_daily:
+                    summaries['precip_daily']['date'] = pd.to_datetime(summaries['precip_daily']['date'])
+                return summaries, None
             except Exception as e:
                 st.warning(f"Could not read cache for {city_name}. Refetching. Error: {e}")
 
@@ -424,29 +480,34 @@ if st.session_state.form_submitted:
         try:
             daily_resp = requests.get(daily_url)
             if daily_resp.status_code != 200:
-                return None, None, f"Open-Meteo API error (daily): {daily_resp.status_code}"
+                return None, f"Open-Meteo API error (daily): {daily_resp.status_code}"
             daily_data = daily_resp.json()
             if not daily_data.get("daily"):
-                return None, None, f"No data available for {city_name} in this period."
+                return None, f"No data available for {city_name} in this period."
 
             # Process the data
             df = process_daily_data(daily_data)
-            calendar_stats = aggregate_to_calendar_months(df)
-            records = compute_temperature_records(df)
+            summaries = {
+                'monthly': aggregate_to_calendar_months(df),
+                'records': compute_temperature_records(df),
+                'precip_climatology': build_precipitation_climatology(df),
+            }
+            if keeps_daily:
+                summaries['precip_daily'] = build_accumulated_precipitation(df)
 
             # Save to cache
             try:
-                write_cache(calendar_stats, monthly_cache_path)
-                write_cache(records, records_cache_path)
-                if is_volatile_range(end):
+                for kind, path in paths.items():
+                    write_cache(summaries[kind], path)
+                if keeps_daily:
                     prune_superseded_volatile_cache(city_name, lat, lon, start, end)
                 st.caption(f"Saved to cache for {city_name}.")
             except Exception as e:
                 st.warning(f"Could not save cache for {city_name}. Error: {e}")
 
-            return calendar_stats, records, None
+            return summaries, None
         except Exception as e:
-            return None, None, f"Error processing weather data for {city_name}: {str(e)}"
+            return None, f"Error processing weather data for {city_name}: {str(e)}"
 
     def get_daytime_data_by_latlon(city_name, lat, lon, start, end):
         """
@@ -510,9 +571,12 @@ if st.session_state.form_submitted:
     # Prepare city data with lat/lon
     city_latlons = {c['city']: (c['lat'], c['lon']) for c in city_locations}
     with st.spinner("Fetching weather data from Open-Meteo..."):
-        data1, records1, err1 = get_open_meteo_data_by_latlon(city1, *city_latlons[city1], start_dt, end_dt)
-        data2, records2, err2 = get_open_meteo_data_by_latlon(city2, *city_latlons[city2], start_dt, end_dt)
-        data3, records3, err3 = (get_open_meteo_data_by_latlon(city3, *city_latlons[city3], start_dt, end_dt) if city3 else (None, None, None))
+        summaries1, err1 = get_open_meteo_data_by_latlon(city1, *city_latlons[city1], start_dt, end_dt)
+        summaries2, err2 = get_open_meteo_data_by_latlon(city2, *city_latlons[city2], start_dt, end_dt)
+        summaries3, err3 = (get_open_meteo_data_by_latlon(city3, *city_latlons[city3], start_dt, end_dt) if city3 else (None, None))
+
+    data1, data2, data3 = (s['monthly'] if s else None for s in (summaries1, summaries2, summaries3))
+    records1, records2, records3 = (s['records'] if s else None for s in (summaries1, summaries2, summaries3))
 
     if err1:
         st.error(err1)
@@ -559,8 +623,10 @@ if st.session_state.form_submitted:
         current_year_errors = []
         current_year_by_city = {}
         climatology_by_city = {}
+        precip_this_year_by_city = {}
+        precip_climatology_by_city = {}
         if current_year_end > current_year_start:
-            with st.spinner(f"Fetching {current_year} temperatures so far..."):
+            with st.spinner(f"Fetching {current_year} weather so far..."):
                 for city, _, _ in cities_data:
                     _, _, this_year_daily, this_year_err = get_daytime_data_by_latlon(
                         city, *city_latlons[city], current_year_start, current_year_end
@@ -570,12 +636,26 @@ if st.session_state.form_submitted:
                     else:
                         current_year_by_city[city] = this_year_daily
 
+                    this_year_summaries, precip_err = get_open_meteo_data_by_latlon(
+                        city, *city_latlons[city], current_year_start, current_year_end
+                    )
+                    if precip_err:
+                        current_year_errors.append(precip_err)
+                    elif not this_year_summaries['precip_daily'].empty:
+                        precip_this_year_by_city[city] = this_year_summaries['precip_daily']
+
                     if baseline_end > as_date(start_dt):
                         _, climatology, _, baseline_err = get_daytime_data_by_latlon(
                             city, *city_latlons[city], start_dt, baseline_end
                         )
                         if not baseline_err and climatology is not None and not climatology.empty:
                             climatology_by_city[city] = climatology
+
+                        baseline_summaries, baseline_precip_err = get_open_meteo_data_by_latlon(
+                            city, *city_latlons[city], start_dt, baseline_end
+                        )
+                        if not baseline_precip_err and not baseline_summaries['precip_climatology'].empty:
+                            precip_climatology_by_city[city] = baseline_summaries['precip_climatology']
 
         # Show map with city dots at the top of the main page
         if city_locations:
@@ -766,8 +846,12 @@ if st.session_state.form_submitted:
                 if city in climatology_by_city and city in current_year_by_city
             ]
 
+            # Whether a baseline is possible at all depends only on the dates, not on
+            # whether a fetch succeeded, so the two cases get different explanations.
+            has_baseline_range = baseline_end > as_date(start_dt)
+
             if not comparable_cities:
-                if not climatology_by_city:
+                if not has_baseline_range:
                     st.info(
                         f"The selected date range leaves no earlier years to compare {current_year} "
                         f"against. Pick a start date before {current_year} to see this comparison."
@@ -862,5 +946,72 @@ if st.session_state.form_submitted:
                         st.info(f"Not enough historical data to compare {city}.")
                         continue
                     plot_current_year_vs_average(city, merged)
+
+            st.subheader(f"🌧️ Accumulated Precipitation: {current_year} so far vs the {baseline_label} average")
+            st.caption(
+                f"Rainfall added up from 1 January. The dashed line is how much a typical "
+                f"{baseline_label} year had by the same date, so the gap between the two lines "
+                f"is the running surplus or shortfall."
+            )
+
+            precip_cities = [
+                (city, color) for city, _, color in cities_data
+                if city in precip_climatology_by_city and city in precip_this_year_by_city
+            ]
+
+            if not precip_cities:
+                if not has_baseline_range:
+                    st.info(f"No earlier years in the selected range to compare {current_year} rainfall against.")
+                else:
+                    st.info(f"No {current_year} precipitation data available yet for the selected cities.")
+            else:
+                def build_precip_comparison(city):
+                    """Line up this year's running rainfall total against the day-of-year average."""
+                    this_year = precip_this_year_by_city[city].copy()
+                    this_year['month'] = this_year['date'].dt.month
+                    this_year['day'] = this_year['date'].dt.day
+                    merged = this_year.merge(precip_climatology_by_city[city], on=['month', 'day'], how='left')
+                    merged = merged.dropna(subset=['accumulated_precipitation', 'avg_accumulated_precipitation'])
+                    return merged.sort_values('date') if not merged.empty else None
+
+                precip_comparisons = {city: build_precip_comparison(city) for city, _ in precip_cities}
+
+                precip_summary = []
+                for city, _ in precip_cities:
+                    merged = precip_comparisons[city]
+                    if merged is None:
+                        continue
+                    latest = merged.iloc[-1]
+                    so_far = latest['accumulated_precipitation']
+                    normal = latest['avg_accumulated_precipitation']
+                    precip_summary.append({
+                        "City": city,
+                        f"{current_year} so far (mm)": f"{so_far:.0f}",
+                        "Typical by this date (mm)": f"{normal:.0f}",
+                        "Difference (mm)": f"{so_far - normal:+.0f}",
+                        "Share of typical": f"{so_far / normal:.0%}" if normal else "n/a",
+                    })
+                if precip_summary:
+                    st.table(pd.DataFrame(precip_summary))
+
+                precip_fig = go.Figure()
+                for city, color in precip_cities:
+                    merged = precip_comparisons[city]
+                    if merged is None:
+                        st.info(f"Not enough historical data to compare precipitation for {city}.")
+                        continue
+                    precip_fig.add_trace(go.Scatter(
+                        x=merged['date'], y=merged['avg_accumulated_precipitation'], mode='lines',
+                        name=f"{city} typical", line=dict(color=color, width=1.5, dash='dash')
+                    ))
+                    precip_fig.add_trace(go.Scatter(
+                        x=merged['date'], y=merged['accumulated_precipitation'], mode='lines',
+                        name=f"{city} {current_year}", line=dict(color=color, width=2.5)
+                    ))
+                precip_fig.update_layout(
+                    title=f"Accumulated precipitation since 1 January",
+                    xaxis_title="Date", yaxis_title="mm", height=450, hovermode='x unified'
+                )
+                st.plotly_chart(precip_fig)
 else:
     st.info("Welcome! Please select your cities and date range in the sidebar and click 'Submit' to see the weather comparison.")
