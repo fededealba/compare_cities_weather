@@ -7,6 +7,8 @@ This Streamlit app allows you to compare historical weather data — including t
 - 📍 Compare 2 or 3 cities side-by-side  
 - 📅 Select a date range for historical analysis  
 - 📊 View temperature, humidity, rainfall, and sunshine hours  
+- ☀️ Compare daytime-only temperatures, using just the hours between local sunrise and sunset  
+- 🌡️ See how the current year is running day by day against the historical average, shaded red where it is warmer and blue where cooler  
 - 🌐 Supports cities worldwide (based on OpenStreetMap Nominatim)  
 
 ## 🖥️ Live Demo
@@ -42,9 +44,33 @@ https://fededealba-compare-cities-weather-app-zglwfv.streamlit.app
 
 ```
 ├── app.py              # Main Streamlit app
+├── city_cache.csv      # Cached city → lat/lon geocoding results
+├── weather_cache/      # Cached Open-Meteo summaries, keyed by city, coordinates and date range
+│   └── recent/         # Ranges ending at today (gitignored, pruned automatically)
+├── screenshots/        # Images used in this README
 ├── requirements.txt    # Python dependencies
 └── README.md           # This file
 ```
+
+### Caching
+
+The caches are committed to the repo, so previously-looked-up cities load without
+hitting Nominatim or Open-Meteo. Deleting a cache file just means it gets re-fetched.
+
+Only **reduced summaries** are stored, never the raw daily or hourly series the API
+returns — those run to megabytes per city and are one request away:
+
+| File | Contents |
+|---|---|
+| `*_monthly.csv` | 12 rows: per-calendar-month means and percentiles |
+| `*_records.csv` | 1 row: the hottest and coldest day of the range, with dates |
+| `*_daytime.csv` | 12 rows: per-calendar-month daylight-only temperature stats |
+| `*_daytime_climatology.csv` | 366 rows: average daytime temperature per day of the year |
+| `*_daytime_daily.csv` | one row per date — only kept for `recent/` ranges, where it is what the chart plots |
+
+Ranges whose end date is within a week of today go to `weather_cache/recent/`. They
+would otherwise be rewritten under a new filename every day, so they are gitignored,
+and superseded copies are deleted whenever a newer one is written.
 
 ## ⚠️ Notes
 
