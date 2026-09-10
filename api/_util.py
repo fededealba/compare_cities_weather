@@ -17,7 +17,7 @@ if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
 from weatherlib import geocode  # noqa: E402
-from weatherlib.openmeteo import OpenMeteoError  # noqa: E402
+from weatherlib.openmeteo import OpenMeteoError, OpenMeteoRateLimited  # noqa: E402
 
 
 class BadRequest(Exception):
@@ -47,6 +47,8 @@ def resolve(fn, params):
         return 404, {'error': str(exc)}
     except geocode.GeocodeUnavailable as exc:
         return 503, {'error': str(exc)}
+    except OpenMeteoRateLimited as exc:
+        return 429, {'error': str(exc)}
     except OpenMeteoError as exc:
         return 502, {'error': str(exc)}
     except Exception as exc:  # noqa: BLE001 - last-resort guard for the function

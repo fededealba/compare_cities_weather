@@ -44,7 +44,10 @@ def run(params):
 class handler(BaseHTTPRequestHandler):
     def do_GET(self):
         status, payload = resolve(run, query_params(self.path))
-        send(self, status, payload, CACHE_SECONDS)
+        # Only let the CDN hold a fully-successful payload. A partial one (some
+        # upstream series rate-limited) should be re-tried on the next visit.
+        complete = status == 200 and not payload.get('warnings')
+        send(self, status, payload, CACHE_SECONDS if complete else 0)
 
     def log_message(self, *args):
         pass

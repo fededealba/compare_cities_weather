@@ -16,14 +16,14 @@ original **Streamlit** version is still in the repo as [`app.py`](app.py).
 - ☀️ Daytime-only temperatures, using just the hours between local sunrise and sunset
 - 🌡️ How the current year is running day by day against the historical average, shaded red where warmer and blue where cooler
 - 🌧️ This year's accumulated rainfall against a typical year's, as a running surplus or shortfall
-- 🌐 Cities worldwide, geocoded via OpenStreetMap Nominatim
+- 🌐 Cities worldwide, geocoded via the Open-Meteo geocoding API
 
 ## 🧰 Tech Stack
 
 - Frontend: static HTML/CSS + vanilla JS, charts by [Plotly.js](https://plotly.com/javascript/)
 - API: [Vercel Python functions](https://vercel.com/docs/functions/runtimes/python) (`api/*.py`)
 - Data crunching: [pandas](https://pandas.pydata.org/) in [`weatherlib/`](weatherlib/), shared with the Streamlit app
-- Weather: [Open-Meteo](https://open-meteo.com) · Geocoding: [Nominatim](https://nominatim.openstreetmap.org)
+- Weather + geocoding: [Open-Meteo](https://open-meteo.com) (the Streamlit `app.py` still geocodes via Nominatim/geopy)
 
 ## 🖥️ Run it locally
 
@@ -60,8 +60,16 @@ timeout to 60s and bundles the committed `.csv` caches into the function.
 **What changes on Vercel:** the deployment filesystem is read-only, so a
 newly-looked-up city is fetched live but not written back to the cache — it is
 re-fetched next time. The ~30 cities already in `city_cache.csv` /
-`weather_cache/` load instantly. Responses carry long `s-maxage` headers so the
-CDN absorbs repeat traffic.
+`weather_cache/` load instantly. Fully-successful responses carry an `s-maxage`
+header so the CDN absorbs repeat traffic.
+
+**About rate limits (429):** Vercel functions share egress IPs with every other
+Vercel project, so Open-Meteo's per-IP limits can be hit by neighbours. Mitigations
+in place: geocoding uses Open-Meteo rather than Nominatim (whose policy forbids
+cloud traffic and blocks such IPs); the archive fetch retries a 429 with backoff;
+the frontend staggers its per-city requests; partial responses aren't CDN-cached.
+The durable fix if it still bites is to pre-generate more cache files (see
+[Caching](#caching)) or add a persistent KV store for fetched summaries.
 
 ## 📁 Layout
 
@@ -78,15 +86,15 @@ CDN absorbs repeat traffic.
 │   ├── aggregate.py    # daily/hourly series → the reduced summaries
 │   ├── openmeteo.py    # Open-Meteo URL builders + fetch
 │   ├── cache.py        # read-only access to weather_cache/
-│   ├── geocode.py      # city_cache.csv, then Nominatim
+│   ├── geocode.py      # city_cache.csv, then Open-Meteo geocoding
 │   └── service.py      # orchestration: assemble one city's payload
 ├── app.py              # Original Streamlit app (still works)
 ├── dev_server.py       # Local static + /api server
 ├── city_cache.csv      # Cached city → lat/lon
 ├── weather_cache/      # Cached Open-Meteo summaries (see below)
 │   └── recent/         # Ranges ending near today (gitignored)
-├── requirements.txt              # API / weatherlib deps
-├── requirements-streamlit.txt    # + streamlit, plotly (for app.py)
+├── requirements.txt              # API / weatherlib deps (pandas, requests)
+├── requirements-streamlit.txt    # + streamlit, plotly, geopy (for app.py)
 └── vercel.json
 ```
 

@@ -127,7 +127,11 @@ async function onSubmit(event) {
   setStatus([{ cls: "loading", text: `Fetching weather for ${names.join(", ")}…` }]);
   ["#resolved1", "#resolved2", "#resolved3"].forEach((s) => { $(s).textContent = ""; $(s).classList.remove("error"); });
 
-  const settled = await Promise.allSettled(names.map((n) => fetchCity(n, start, end)));
+  // Stagger the per-city requests: firing 2-3 cold serverless invocations at
+  // the exact same instant means 2-3 bursts of upstream API calls from the same
+  // shared IP, which is what trips Open-Meteo's rate limiter.
+  const settled = await Promise.allSettled(names.map((n, i) =>
+    new Promise((r) => setTimeout(r, i * 400)).then(() => fetchCity(n, start, end))));
 
   const errors = [];
   const ok = [];

@@ -4,12 +4,19 @@ The URL builders are identical to the originals in ``app.py``. ``timezone=auto``
 is what makes ``is_day`` (and the daily aggregation) follow the location's local
 clock rather than UTC.
 """
+import time
+
 import requests
 
 API_BASE_URL = 'https://archive-api.open-meteo.com/v1/archive'
 
 # Open-Meteo's archive can be slow for multi-decade hourly pulls; give it room.
 _TIMEOUT = (10, 110)
+
+# Vercel functions share egress IPs with every other Vercel project, so
+# Open-Meteo's per-IP limits get hit by neighbours. A 429 usually clears within
+# seconds, so retry a couple of times before giving up.
+_RETRY_WAITS = (1.5, 4.0)
 
 
 def build_api_url(lat, lon, start_str, end_str):
@@ -39,14 +46,40 @@ class OpenMeteoError(RuntimeError):
     """Raised when the archive API returns an error or no usable data."""
 
 
+class OpenMeteoRateLimited(OpenMeteoError):
+    """The archive API is rate-limiting us right now; retrying later may work."""
+
+
 def _get_json(url, what):
-    try:
-        resp = requests.get(url, timeout=_TIMEOUT)
-    except requests.RequestException as exc:
-        raise OpenMeteoError(f"Could not reach Open-Meteo ({what}): {exc}") from exc
-    if resp.status_code != 200:
-        raise OpenMeteoError(f"Open-Meteo API error ({what}): {resp.status_code}")
-    return resp.json()
+    last_error = None
+    for attempt in range(len(_RETRY_WAITS) + 1):
+        try:
+            resp = requests.get(url, timeout=_TIMEOUT)
+        except requests.RequestException as exc:
+            last_error = OpenMeteoError(f"Could not reach Open-Meteo ({what}): {exc}")
+        else:
+            if resp.status_code == 200:
+                return resp.json()
+            if resp.status_code == 429:
+                last_error = OpenMeteoRateLimited(
+                    f"Open-Meteo is rate-limiting requests right now ({what}). "
+                    f"Please try again in a minute."
+                )
+            elif resp.status_code >= 500:
+                last_error = OpenMeteoError(f"Open-Meteo server error ({what}): {resp.status_code}")
+            else:
+                # Other 4xx (bad coordinates, out-of-range dates) will not fix
+                # themselves on retry -- surface the API's own reason and stop.
+                try:
+                    reason = resp.json().get('reason')
+                except ValueError:
+                    reason = None
+                raise OpenMeteoError(reason or f"Open-Meteo API error ({what}): {resp.status_code}")
+
+        if attempt < len(_RETRY_WAITS):
+            time.sleep(_RETRY_WAITS[attempt])
+
+    raise last_error
 
 
 def fetch_daily(lat, lon, start_str, end_str):
