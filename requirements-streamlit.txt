@@ -1,0 +1,5 @@
+# Extra dependencies for running the original Streamlit app (app.py) locally.
+# The Vercel deployment does not use these.
+-r requirements.txt
+streamlit
+plotly

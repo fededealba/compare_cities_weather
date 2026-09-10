@@ -5,3 +5,6 @@ __pycache__/
 # filename every day, so they are kept out of version control; the app prunes
 # superseded copies on write.
 weather_cache/recent/
+
+# Vercel CLI
+.vercel

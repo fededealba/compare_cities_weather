@@ -1,5 +1,4 @@
-streamlit
+# Runtime dependencies for the Vercel Python API (api/*.py + weatherlib/).
 pandas
-plotly
+requests
 geopy
-requests 

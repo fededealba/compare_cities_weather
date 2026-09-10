@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Compare Historical Weather Between Cities</title>
+  <meta name="description" content="Compare historical temperature, humidity, sunshine and rainfall between two or three cities, using Open-Meteo data." />
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🌦️</text></svg>" />
+  <link rel="stylesheet" href="/styles.css" />
+  <script src="https://cdn.plot.ly/plotly-2.35.2.min.js" charset="utf-8"></script>
+</head>
+<body>
+  <header class="site-header">
+    <h1>🌦️ Compare Historical Weather Between Cities</h1>
+    <p class="source">Source: <a href="https://open-meteo.com" target="_blank" rel="noopener">open-meteo.com</a></p>
+  </header>
+
+  <div class="layout">
+    <aside class="sidebar">
+      <form id="settings-form">
+        <h2>Settings</h2>
+
+        <label class="check">
+          <input type="checkbox" id="add-third" />
+          Add a third city?
+        </label>
+
+        <label for="start-date">Start date</label>
+        <input type="date" id="start-date" value="2010-01-01" min="1940-01-01" />
+
+        <label for="end-date">End date</label>
+        <input type="date" id="end-date" value="2025-12-31" min="1940-01-01" />
+
+        <label for="city1">City 1</label>
+        <input type="text" id="city1" value="Paris" autocomplete="off" />
+        <p class="resolved" id="resolved1"></p>
+
+        <label for="city2">City 2</label>
+        <input type="text" id="city2" value="Madrid" autocomplete="off" />
+        <p class="resolved" id="resolved2"></p>
+
+        <div id="city3-wrap" hidden>
+          <label for="city3">City 3</label>
+          <input type="text" id="city3" value="Berlin" autocomplete="off" />
+          <p class="resolved" id="resolved3"></p>
+        </div>
+
+        <button type="submit" id="submit-btn">Compare</button>
+      </form>
+    </aside>
+
+    <main class="content">
+      <div id="status" class="status" role="status"></div>
+
+      <section id="results" hidden>
+        <div id="map" class="map"></div>
+
+        <nav class="tabs" role="tablist">
+          <button class="tab is-active" data-tab="plots" role="tab">📊 Plots</button>
+          <button class="tab" data-tab="averages" role="tab">🗓️ Monthly Averages</button>
+          <button class="tab" data-tab="current" role="tab">🌡️ Comparison to this year</button>
+        </nav>
+
+        <div class="tab-panel is-active" data-panel="plots">
+          <div id="plots-charts"></div>
+        </div>
+
+        <div class="tab-panel" data-panel="averages">
+          <div class="field">
+            <label for="prediction-date">Prediction date</label>
+            <input type="date" id="prediction-date" />
+          </div>
+          <h3 id="averages-heading"></h3>
+          <div id="averages-table"></div>
+        </div>
+
+        <div class="tab-panel" data-panel="current">
+          <div id="current-content"></div>
+        </div>
+      </section>
+
+      <section id="welcome" class="welcome">
+        <p>Pick your cities and a date range on the left, then press <strong>Compare</strong>.</p>
+        <p class="muted">
+          Previously looked-up cities load from a committed cache. A new city is
+          fetched live from Open-Meteo, which can take a few seconds for long
+          historical ranges.
+        </p>
+      </section>
+    </main>
+  </div>
+
+  <footer class="site-footer">
+    <p>Weather from <a href="https://open-meteo.com" target="_blank" rel="noopener">Open-Meteo</a>,
+       geocoding from <a href="https://nominatim.openstreetmap.org" target="_blank" rel="noopener">OpenStreetMap Nominatim</a>.</p>
+  </footer>
+
+  <script src="/app.js"></script>
+</body>
+</html>

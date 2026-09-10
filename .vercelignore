@@ -1,0 +1,7 @@
+.git
+__pycache__/
+screenshots/
+app.py
+dev_server.py
+requirements-streamlit.txt
+weather_cache/recent/
