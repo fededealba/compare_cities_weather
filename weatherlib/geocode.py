@@ -14,6 +14,7 @@ data. ``app.py`` still uses geopy/Nominatim; that dependency now lives only in
 ``requirements-streamlit.txt``.
 """
 import os
+import time
 
 import pandas as pd
 import requests
@@ -23,6 +24,7 @@ CITY_CACHE_FILE = os.path.join(_ROOT, 'city_cache.csv')
 
 _GEOCODE_URL = 'https://geocoding-api.open-meteo.com/v1/search'
 _TIMEOUT = (5, 15)
+_RETRY_WAITS = (2.0, 6.0)
 
 
 class GeocodeError(RuntimeError):
@@ -76,22 +78,31 @@ def _pick_result(results, hint):
 def _open_meteo_geocode(query):
     name = query.split(',')[0].strip()
     hint = query.split(',', 1)[1].strip() if ',' in query else ''
-    try:
-        resp = requests.get(_GEOCODE_URL, params={
-            'name': name, 'count': 10, 'language': 'en', 'format': 'json',
-        }, timeout=_TIMEOUT)
-    except requests.RequestException as exc:
-        raise GeocodeUnavailable("Geocoding service unavailable, please try again later.") from exc
+    params = {'name': name, 'count': 10, 'language': 'en', 'format': 'json'}
 
-    if resp.status_code == 429:
-        raise GeocodeUnavailable("Geocoding is rate-limited right now, please try again in a moment.")
-    if resp.status_code != 200:
-        raise GeocodeUnavailable(f"Geocoding service error ({resp.status_code}).")
+    last_error = None
+    for attempt in range(len(_RETRY_WAITS) + 1):
+        try:
+            resp = requests.get(_GEOCODE_URL, params=params, timeout=_TIMEOUT)
+        except requests.RequestException:
+            last_error = GeocodeUnavailable("Geocoding service unavailable, please try again later.")
+        else:
+            if resp.status_code == 200:
+                results = resp.json().get('results') or []
+                if not results:
+                    raise GeocodeError(
+                        f"Could not locate '{query}'. Try just the city name, or add a country.")
+                return _pick_result(results, hint)
+            if resp.status_code == 429:
+                last_error = GeocodeUnavailable(
+                    "Geocoding is rate-limited right now, please try again in a moment.")
+            else:
+                last_error = GeocodeUnavailable(f"Geocoding service error ({resp.status_code}).")
 
-    results = resp.json().get('results') or []
-    if not results:
-        raise GeocodeError(f"Could not locate '{query}'. Try just the city name, or add a country.")
-    return _pick_result(results, hint)
+        if attempt < len(_RETRY_WAITS):
+            time.sleep(_RETRY_WAITS[attempt])
+
+    raise last_error
 
 
 def geocode(city_name):

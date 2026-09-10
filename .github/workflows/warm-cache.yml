@@ -40,6 +40,8 @@ jobs:
       - run: pip install -r requirements.txt
 
       - name: Warm the cache
+        id: warm
+        continue-on-error: true
         run: |
           if [ "${{ github.event.schedule }}" = "17 5 * * *" ]; then
             python scripts/warm_cache.py --current-year-only
@@ -48,6 +50,7 @@ jobs:
           fi
 
       - name: Commit any changes
+        if: always()
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -58,3 +61,11 @@ jobs:
             git commit -m "Warm weather cache ($(date -u +%Y-%m-%d))"
             git push
           fi
+
+      # Surface a partial failure (some cities couldn't be warmed) without losing
+      # the cities that did succeed -- those were committed by the step above.
+      - name: Flag partial failure
+        if: steps.warm.outcome == 'failure'
+        run: |
+          echo "::warning::Some cities failed to warm; re-run to pick up the rest."
+          exit 1
