@@ -90,16 +90,21 @@ class _CityFetcher:
 
     def _load_summaries(self, start, end):
         volatile = cache.is_volatile_range(end)
+        # For volatile ranges the per-day accumulation is what the chart plots, so
+        # it has to be part of the cached set or we fall through to a live fetch.
+        kinds = ['monthly', 'records', 'precip_climatology']
+        if volatile:
+            kinds.append('precip_daily')
         cached = cache.read_kinds(
-            self.city, self.lat, self.lon, start, end,
-            ['monthly', 'records', 'precip_climatology'],
+            self.city, self.lat, self.lon, start, end, kinds,
+            parse_dates={'precip_daily': ['date']},
         )
         if cached is not None:
             return {
                 'monthly': cached['monthly'],
                 'records': cached['records'],
                 'precip_climatology': cached['precip_climatology'],
-                'precip_daily': None,
+                'precip_daily': cached.get('precip_daily'),
             }
         data = fetch_daily(self.lat, self.lon, _iso(start), _iso(end))
         df = aggregate.process_daily_data(data)
@@ -112,15 +117,18 @@ class _CityFetcher:
 
     def _load_daytime(self, start, end):
         volatile = cache.is_volatile_range(end)
+        kinds = ['daytime', 'daytime_climatology']
+        if volatile:
+            kinds.append('daytime_daily')
         cached = cache.read_kinds(
-            self.city, self.lat, self.lon, start, end,
-            ['daytime', 'daytime_climatology'],
+            self.city, self.lat, self.lon, start, end, kinds,
+            parse_dates={'daytime_daily': ['date']},
         )
         if cached is not None:
             return {
                 'daytime': cached['daytime'],
                 'climatology': cached['daytime_climatology'],
-                'daily': None,
+                'daily': cached.get('daytime_daily'),
             }
         data = fetch_hourly(self.lat, self.lon, _iso(start), _iso(end))
         daytime_stats = aggregate.aggregate_daytime_to_calendar_months(data)

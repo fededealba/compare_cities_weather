@@ -1,0 +1,50 @@
+name: Warm weather cache
+
+# Fetches Open-Meteo data ahead of time and commits it, so the deployed Vercel
+# app serves known cities entirely from weather_cache/ with no live API calls.
+# Runs from GitHub's runners (not Vercel's shared IPs) and spaces its requests
+# out to stay under Open-Meteo's rate limits.
+
+on:
+  schedule:
+    - cron: '17 5 * * *'   # daily, 05:17 UTC
+  workflow_dispatch:
+    inputs:
+      cities:
+        description: 'Space-separated city names (blank = city_cache.csv + defaults)'
+        required: false
+        default: ''
+
+concurrency:
+  group: warm-cache
+  cancel-in-progress: false
+
+jobs:
+  warm:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      - name: Warm the cache
+        run: python scripts/warm_cache.py ${{ github.event.inputs.cities }}
+
+      - name: Commit any changes
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add weather_cache city_cache.csv
+          if git diff --cached --quiet; then
+            echo "No cache changes."
+          else
+            git commit -m "Warm weather cache ($(date -u +%Y-%m-%d))"
+            git push
+          fi

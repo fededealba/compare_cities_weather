@@ -690,5 +690,10 @@ $("#add-third").addEventListener("change", (e) => {
   $("#city3-wrap").hidden = !e.target.checked;
 });
 $("#settings-form").addEventListener("submit", onSubmit);
+
+// Default the baseline to whole calendar years, ending at the last complete one
+// — that's the range the warm-cache job keeps populated, so it loads instantly.
 $("#end-date").max = new Date().toISOString().slice(0, 10);
+$("#end-date").value = `${new Date().getFullYear() - 1}-12-31`;
+
 setupTabs();

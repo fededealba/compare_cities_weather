@@ -46,13 +46,45 @@ def get_cache_path(city_name, lat, lon, start, end, kind):
     return os.path.join(directory, f'{cache_key}_{kind}.csv')
 
 
+def write_cache(df, path, decimals=2):
+    """Write one summary DataFrame to ``path``. Used by ``scripts/warm_cache.py``.
+
+    Cached numbers are display-grade, so full float precision is just bloat --
+    round the float columns (rounding a datetime column would only warn).
+    """
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    rounded = df.copy()
+    float_columns = rounded.select_dtypes(include='float').columns
+    rounded[float_columns] = rounded[float_columns].round(decimals)
+    rounded.to_csv(path, index=False)
+
+
+def prune_superseded(city_name, lat, lon, start, keep_end):
+    """Drop earlier 'up to today' files for the same city and start date.
+
+    Without this the volatile directory gains a fresh set of files every day,
+    each strictly superseded by the next.
+    """
+    if not os.path.isdir(VOLATILE_CACHE_DIR):
+        return
+    prefix = f'{get_cache_slug(city_name, lat, lon)}_{as_date(start):%Y-%m-%d}_'
+    keep_prefix = f'{prefix}{as_date(keep_end):%Y-%m-%d}_'
+    for name in os.listdir(VOLATILE_CACHE_DIR):
+        if name.startswith(prefix) and not name.startswith(keep_prefix):
+            try:
+                os.remove(os.path.join(VOLATILE_CACHE_DIR, name))
+            except OSError:
+                pass
+
+
 def read_kinds(city_name, lat, lon, start, end, kinds, parse_dates=None):
     """Return ``{kind: DataFrame}`` if every requested kind is on disk, else None.
 
-    Volatile ranges always return None so the caller refetches fresh data.
+    Volatile (near-today) ranges are read too when a file exists: the warm-cache
+    job (``scripts/warm_cache.py``, run daily by CI) keeps them fresh, and serving
+    a few hours stale beats a burst of Open-Meteo calls that get rate-limited.
+    A miss just falls through to a live fetch as before.
     """
-    if is_volatile_range(end):
-        return None
     paths = {kind: get_cache_path(city_name, lat, lon, start, end, kind) for kind in kinds}
     if not all(os.path.exists(path) for path in paths.values()):
         return None

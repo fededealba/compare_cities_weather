@@ -4,6 +4,7 @@ The URL builders are identical to the originals in ``app.py``. ``timezone=auto``
 is what makes ``is_day`` (and the daily aggregation) follow the location's local
 clock rather than UTC.
 """
+import random
 import time
 
 import requests
@@ -13,10 +14,10 @@ API_BASE_URL = 'https://archive-api.open-meteo.com/v1/archive'
 # Open-Meteo's archive can be slow for multi-decade hourly pulls; give it room.
 _TIMEOUT = (10, 110)
 
-# Vercel functions share egress IPs with every other Vercel project, so
-# Open-Meteo's per-IP limits get hit by neighbours. A 429 usually clears within
-# seconds, so retry a couple of times before giving up.
-_RETRY_WAITS = (1.5, 4.0)
+# Open-Meteo throttles bursts of heavy requests hard (a 429 with no Retry-After).
+# It usually clears within a few seconds, so back off and retry before giving up.
+# Most traffic should be served from the committed cache and never get here.
+_RETRY_WAITS = (2.0, 5.0, 9.0)
 
 
 def build_api_url(lat, lon, start_str, end_str):
@@ -77,7 +78,7 @@ def _get_json(url, what):
                 raise OpenMeteoError(reason or f"Open-Meteo API error ({what}): {resp.status_code}")
 
         if attempt < len(_RETRY_WAITS):
-            time.sleep(_RETRY_WAITS[attempt])
+            time.sleep(_RETRY_WAITS[attempt] + random.uniform(0, 1))
 
     raise last_error
 

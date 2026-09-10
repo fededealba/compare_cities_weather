@@ -1,10 +1,5 @@
 __pycache__/
 .DS_Store
 
-# Caches for date ranges that run up to today. These are rewritten under a new
-# filename every day, so they are kept out of version control; the app prunes
-# superseded copies on write.
-weather_cache/recent/
-
 # Vercel CLI
 .vercel

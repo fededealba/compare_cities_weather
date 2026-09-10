@@ -59,17 +59,33 @@ timeout to 60s and bundles the committed `.csv` caches into the function.
 
 **What changes on Vercel:** the deployment filesystem is read-only, so a
 newly-looked-up city is fetched live but not written back to the cache — it is
-re-fetched next time. The ~30 cities already in `city_cache.csv` /
-`weather_cache/` load instantly. Fully-successful responses carry an `s-maxage`
-header so the CDN absorbs repeat traffic.
+re-fetched next time. Cities covered by the warm-cache job (below) load with no
+live API calls at all. Fully-successful responses carry an `s-maxage` header so
+the CDN absorbs repeat traffic.
 
-**About rate limits (429):** Vercel functions share egress IPs with every other
-Vercel project, so Open-Meteo's per-IP limits can be hit by neighbours. Mitigations
-in place: geocoding uses Open-Meteo rather than Nominatim (whose policy forbids
-cloud traffic and blocks such IPs); the archive fetch retries a 429 with backoff;
-the frontend staggers its per-city requests; partial responses aren't CDN-cached.
-The durable fix if it still bites is to pre-generate more cache files (see
-[Caching](#caching)) or add a persistent KV store for fetched summaries.
+**About rate limits (429):** Open-Meteo throttles bursts of multi-decade
+requests hard, and Vercel functions share egress IPs across all tenants, so live
+fetching from the app is unreliable. The real fix is the warm-cache job — the
+app should almost never fetch live. When it does: geocoding uses Open-Meteo, not
+Nominatim (whose policy forbids cloud traffic); the archive fetch retries 429s
+with backoff; the frontend staggers per-city requests; partial responses aren't
+CDN-cached.
+
+### Warm-cache job
+
+[`scripts/warm_cache.py`](scripts/warm_cache.py) fetches Open-Meteo data ahead of
+time and writes it into `weather_cache/`, so the deployed app serves known cities
+entirely from committed files. [`.github/workflows/warm-cache.yml`](.github/workflows/warm-cache.yml)
+runs it daily from GitHub's runners (not Vercel's shared IPs) and commits the
+result; each run triggers one Vercel redeploy. It warms, per city:
+
+- the historical baseline (`2010-01-01` → end of last full year) — skipped when already on disk;
+- the current-year range (`Jan 1` → today) — refreshed each run, superseding yesterday's files.
+
+The city list is `city_cache.csv` plus the three defaults; pass names to the
+script or the workflow's manual trigger to add one-offs. There's a ~few-hour
+window each day (after midnight UTC, before the job runs) where the current-year
+range shifts by a day and the app fetches that one range live.
 
 ## 📁 Layout
 
@@ -84,15 +100,17 @@ The durable fix if it still bites is to pre-generate more cache files (see
 │   └── _util.py        # shared request/response helpers (not a route)
 ├── weatherlib/         # Pure pandas logic, shared by the API and app.py
 │   ├── aggregate.py    # daily/hourly series → the reduced summaries
-│   ├── openmeteo.py    # Open-Meteo URL builders + fetch
-│   ├── cache.py        # read-only access to weather_cache/
+│   ├── openmeteo.py    # Open-Meteo URL builders + fetch (with 429 retry)
+│   ├── cache.py        # read/write access to weather_cache/
 │   ├── geocode.py      # city_cache.csv, then Open-Meteo geocoding
 │   └── service.py      # orchestration: assemble one city's payload
+├── scripts/warm_cache.py         # pre-generate weather_cache/ entries
+├── .github/workflows/warm-cache.yml  # runs it daily
 ├── app.py              # Original Streamlit app (still works)
 ├── dev_server.py       # Local static + /api server
 ├── city_cache.csv      # Cached city → lat/lon
 ├── weather_cache/      # Cached Open-Meteo summaries (see below)
-│   └── recent/         # Ranges ending near today (gitignored)
+│   └── recent/         # Current-year ranges, refreshed by the warm-cache job
 ├── requirements.txt              # API / weatherlib deps (pandas, requests)
 ├── requirements-streamlit.txt    # + streamlit, plotly, geopy (for app.py)
 └── vercel.json
@@ -100,8 +118,8 @@ The durable fix if it still bites is to pre-generate more cache files (see
 
 ### Caching
 
-The caches are committed to the repo, so previously-looked-up cities load without
-hitting Nominatim or Open-Meteo. Deleting a cache file just means it gets
+The caches are committed to the repo, so cities the warm-cache job covers load
+without hitting Open-Meteo at all. Deleting a cache file just means it gets
 re-fetched. Only **reduced summaries** are stored, never the raw daily or hourly
 series the API returns — those run to megabytes per city and are one request away:
 
@@ -112,12 +130,12 @@ series the API returns — those run to megabytes per city and are one request a
 | `*_daytime.csv` | 12 rows: per-calendar-month daylight-only temperature stats |
 | `*_daytime_climatology.csv` | 366 rows: average daytime temperature per day of the year |
 | `*_precip_climatology.csv` | 366 rows: average accumulated rainfall by each day of the year |
-| `*_daytime_daily.csv`, `*_precip_daily.csv` | one row per date — only kept for `recent/` ranges, where they are what the charts plot |
+| `*_daytime_daily.csv`, `*_precip_daily.csv` | one row per date — only for `recent/` (current-year) ranges, where they are what the comparison charts plot |
 
-Ranges whose end date is within a week of today are treated as volatile: the
-Streamlit app writes them under `weather_cache/recent/` (gitignored, pruned on
-write), and the Vercel API always refetches them rather than trusting a committed
-copy.
+Ranges ending within a week of today go to `weather_cache/recent/` under a
+filename that includes the end date, so they change every day. The warm-cache
+job rewrites them and prunes the superseded copies; a local Streamlit run may
+also leave files there (safe to `git checkout`).
 
 ## ⚠️ Notes
 
