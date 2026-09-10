@@ -75,17 +75,24 @@ CDN-cached.
 
 [`scripts/warm_cache.py`](scripts/warm_cache.py) fetches Open-Meteo data ahead of
 time and writes it into `weather_cache/`, so the deployed app serves known cities
-entirely from committed files. [`.github/workflows/warm-cache.yml`](.github/workflows/warm-cache.yml)
-runs it daily from GitHub's runners (not Vercel's shared IPs) and commits the
-result; each run triggers one Vercel redeploy. It warms, per city:
+entirely from committed files. It warms, per city:
 
 - the historical baseline (`2010-01-01` → end of last full year) — skipped when already on disk;
 - the current-year range (`Jan 1` → today) — refreshed each run, superseding yesterday's files.
 
-The city list is `city_cache.csv` plus the three defaults; pass names to the
-script or the workflow's manual trigger to add one-offs. There's a ~few-hour
-window each day (after midnight UTC, before the job runs) where the current-year
-range shifts by a day and the app fetches that one range live.
+[`.github/workflows/warm-cache.yml`](.github/workflows/warm-cache.yml) runs it
+from GitHub's runners (not Vercel's shared IPs) and commits the result — each run
+triggers one Vercel redeploy:
+
+- **daily** (05:17 UTC) — current-year ranges only; keeps the comparison charts fresh;
+- **weekly** (Mondays) — full run, picking up the historical baseline for any newly added city;
+- **manual** (Actions → *Run workflow*) — full run; pass names to warm just those.
+
+The city list is [`scripts/cities.txt`](scripts/cities.txt) (a curated set of
+~70 world cities) plus everything already in `city_cache.csv` — add a line to
+`cities.txt` and the next weekly (or manual) run resolves and caches it. There's
+a ~5-hour window each day (after midnight UTC, before the job runs) where the
+current-year range shifts by a day and the app fetches that one range live.
 
 ## 📁 Layout
 
@@ -105,7 +112,8 @@ range shifts by a day and the app fetches that one range live.
 │   ├── geocode.py      # city_cache.csv, then Open-Meteo geocoding
 │   └── service.py      # orchestration: assemble one city's payload
 ├── scripts/warm_cache.py         # pre-generate weather_cache/ entries
-├── .github/workflows/warm-cache.yml  # runs it daily
+├── scripts/cities.txt            # curated city list for the warm job
+├── .github/workflows/warm-cache.yml  # runs it daily / weekly
 ├── app.py              # Original Streamlit app (still works)
 ├── dev_server.py       # Local static + /api server
 ├── city_cache.csv      # Cached city → lat/lon

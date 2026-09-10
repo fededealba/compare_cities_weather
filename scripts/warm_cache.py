@@ -35,8 +35,9 @@ from weatherlib.openmeteo import OpenMeteoError, fetch_daily, fetch_hourly  # no
 
 HISTORICAL_START = date(2010, 1, 1)
 DEFAULT_CITIES = ['Paris', 'Madrid', 'Berlin']
-SLEEP_BETWEEN_FETCHES = 4.0
-SLEEP_BETWEEN_CITIES = 6.0
+CITIES_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'cities.txt')
+SLEEP_BETWEEN_FETCHES = 3.0
+SLEEP_BETWEEN_CITIES = 4.0
 # When a city fails even after openmeteo's own retries, Open-Meteo has throttled
 # this IP for a while. Wait it out once before giving up on the city.
 COOLDOWN_SECONDS = 90.0
@@ -83,23 +84,37 @@ def warm_range(city, lat, lon, start, end, include_daily):
     print(f"    {start}..{end}: wrote {len(kinds)} files")
 
 
+def _curated_names():
+    if not os.path.exists(CITIES_FILE):
+        return []
+    names = []
+    with open(CITIES_FILE) as handle:
+        for line in handle:
+            line = line.split('#', 1)[0].strip()
+            if line:
+                names.append(line)
+    return names
+
+
 def city_names():
     explicit = [a for a in sys.argv[1:] if not a.startswith('--')]
     if explicit:
         return explicit
 
     names = list(DEFAULT_CITIES)
+    seen_slugs = set()
+    # Cities already resolved (from prior use or a past warm run) come first, so a
+    # curated name that matches one reuses its coordinates and cache files.
     if os.path.exists(geocode.CITY_CACHE_FILE):
-        seen = set()
-        cache_df = pd.read_csv(geocode.CITY_CACHE_FILE)
-        for _, row in cache_df.iterrows():
-            # Dedupe by cache slug: two names at the same rounded coordinates
-            # produce identical cache files, so warming both is wasted work.
+        for _, row in pd.read_csv(geocode.CITY_CACHE_FILE).iterrows():
             slug = cache.get_cache_slug(row['city'], float(row['lat']), float(row['lon']))
-            if slug in seen or row['city'] in names:
+            if slug in seen_slugs or row['city'] in names:
                 continue
-            seen.add(slug)
+            seen_slugs.add(slug)
             names.append(row['city'])
+    for name in _curated_names():
+        if name not in names:
+            names.append(name)
     return names
 
 

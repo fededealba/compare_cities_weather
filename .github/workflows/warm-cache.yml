@@ -4,14 +4,19 @@ name: Warm weather cache
 # app serves known cities entirely from weather_cache/ with no live API calls.
 # Runs from GitHub's runners (not Vercel's shared IPs) and spaces its requests
 # out to stay under Open-Meteo's rate limits.
+#
+#   daily  -> current-year ranges only (fast, keeps the comparison charts fresh)
+#   weekly -> full refresh, including the historical baseline for any new cities
+#   manual -> full; pass names to warm just those
 
 on:
   schedule:
-    - cron: '17 5 * * *'   # daily, 05:17 UTC
+    - cron: '17 5 * * *'    # daily 05:17 UTC
+    - cron: '43 4 * * 1'    # Mondays 04:43 UTC
   workflow_dispatch:
     inputs:
       cities:
-        description: 'Space-separated city names (blank = city_cache.csv + defaults)'
+        description: 'Space-separated city names (blank = cities.txt + city_cache.csv)'
         required: false
         default: ''
 
@@ -35,7 +40,12 @@ jobs:
       - run: pip install -r requirements.txt
 
       - name: Warm the cache
-        run: python scripts/warm_cache.py ${{ github.event.inputs.cities }}
+        run: |
+          if [ "${{ github.event.schedule }}" = "17 5 * * *" ]; then
+            python scripts/warm_cache.py --current-year-only
+          else
+            python scripts/warm_cache.py ${{ github.event.inputs.cities }}
+          fi
 
       - name: Commit any changes
         run: |

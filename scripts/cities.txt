@@ -1,0 +1,87 @@
+# Cities the warm-cache job keeps populated, on top of whatever is already in
+# city_cache.csv. One name per line; "City, Country" disambiguates. Blank lines
+# and #-comments are ignored. Add a line here and the next warm run picks it up
+# (and resolves its coordinates into city_cache.csv).
+
+# --- North America ---
+New York
+Chicago
+Toronto
+Vancouver
+Montreal
+Seattle
+Denver
+Boston
+Washington, DC
+Honolulu
+Anchorage
+
+# --- Latin America ---
+Sao Paulo
+Rio de Janeiro
+Lima
+Santiago, Chile
+Quito
+Panama City
+San Jose, Costa Rica
+Havana
+Kingston, Jamaica
+
+# --- Europe ---
+Rome
+Amsterdam
+Barcelona
+Athens
+Vienna
+Zurich
+Munich
+Prague
+Warsaw
+Stockholm
+Helsinki
+Dublin
+Edinburgh
+Reykjavik
+Istanbul
+Kyiv
+
+# --- Africa ---
+Cairo
+Cape Town
+Nairobi
+Lagos
+Casablanca
+Marrakech
+Accra
+Addis Ababa
+Dakar
+
+# --- Middle East ---
+Dubai
+Tel Aviv
+Doha
+Tehran
+
+# --- Asia ---
+Tokyo
+Beijing
+Shanghai
+Hong Kong
+Singapore
+Bangkok
+Mumbai
+Delhi
+Seoul
+Jakarta
+Manila
+Hanoi
+Kuala Lumpur
+Taipei
+Colombo
+Kathmandu
+
+# --- Oceania ---
+Sydney
+Melbourne
+Auckland
+Perth
