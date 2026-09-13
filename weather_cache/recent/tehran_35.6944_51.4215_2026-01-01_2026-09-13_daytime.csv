@@ -1,0 +1,10 @@
+calendar_month,time,daytime_temperature,daytime_temperature_p10,daytime_temperature_p90,daylight_hours_sampled
+1,Jan,6.39,0.7,11.2,311
+2,Feb,13.85,6.2,20.5,308
+3,Mar,12.08,6.31,16.9,368
+4,Apr,18.27,11.47,24.2,398
+5,May,25.83,18.89,31.2,434
+6,Jun,31.74,25.2,36.91,420
+7,Jul,34.78,28.23,40.07,434
+8,Aug,34.3,28.4,38.24,427
+9,Sep,30.48,24.44,34.7,158
